@@ -27,6 +27,10 @@
 #define EPTO_PMI_WHENFULL   (1<<4) //triggers a PMI when full
 #define EPTO_GROW_WHENFULL  (1<<5) //grows the buffer when full
 
+#define EPTW_WRITE 0
+#define EPTW_READWRITE 1
+#define EPTW_EXECUTE 2
+
 
 void initMemTypeRanges();
 
@@ -52,5 +56,6 @@ int ept_cloak_removechangeregonbp(QWORD physicalAddress);
 BOOL ept_handleSoftwareBreakpoint(pcpuinfo currentcpuinfo, VMRegisters *vmregisters);
 
 void ept_reset();
+void ept_invalidate();
 
 #endif /* VMM_EPTHANDLER_H_ */

@@ -113,6 +113,8 @@ type
     hintwindow:THintWindow;
     continuemethod: integer;
     AutoCompleteStartLine: string;
+    procedure ContinueAutoComplete;
+    procedure ContinueAutoComplete2(Sender: TObject);
   public
     { public declarations }
     synhighlighter: TSynLuaSyn;
@@ -125,7 +127,7 @@ implementation
 
 { TfrmLuaEngine }
 
-uses luaclass, SynEditTypes;
+uses luaclass, SynEditTypes, globals;
 
 resourcestring
   rsError = 'Script Error';
@@ -148,21 +150,89 @@ begin
   btnexecute.Height:=panel2.clientheight-(2*btnexecute.top);
 end;
 
+procedure TfrmLuaEngine.ContinueAutoComplete;
+var p,p2: tpoint;
+begin
+
+  p:=mscript.RowColumnToPixels(point(mscript.CaretX,mscript.CaretY+1));
+  p2:=mscript.ClientToScreen(point(0,0));
+  scLuaCompleter.Execute('.',p2+p);
+end;
+
+procedure TfrmLuaEngine.ContinueAutoComplete2(sender: TObject);
+begin
+  ContinueAutoComplete;
+  ttimer(sender).enabled:=false;
+  ttimer(sender).free;
+end;
+
 procedure TfrmLuaEngine.scLuaCompleterCodeCompletion(var Value: string;
   SourceValue: string; var SourceStart, SourceEnd: TPoint; KeyChar: TUTF8Char;
   Shift: TShiftState);
+var t: TTimer;
 begin
+  if keychar='.' then
+  begin
+    value:=value+'.';
+//    TThread.Queue(nil, ContinueAutoComplete);
+    t:=TTimer.Create(self);
+    t.interval:=1;
+    t.OnTimer:=ContinueAutoComplete2;
+    t.enabled:=true;
+  end
+  else
+  if keychar='(' then
+    value:=value+'('
+  else
+  if keychar='=' then
+    value:=value+'=';
+
+
+end;
+
+function ParseStringForPath(s: string; var extra: string): string;
+var
+  identchars: TSynIdentChars;
+  identchars2: TSynIdentChars;
+  i: integer;
+  start,stop: integer;
+
+  r: string;
+begin
+  identchars:=['.','a'..'z','A'..'Z','0'..'9','_'];
+
+  extra:='';
+  if s='' then exit('');
+
+  r:='';
+  for i:=length(s) downto 1 do
+    if s[i] in identchars then
+      r:=s[i]+r
+    else
+      break;
+
+  i:=RPos('.',r);
+  if i=0 then
+  begin
+    extra:=r;
+    exit('_G');
+  end;
+
+  extra:=copy(r,i+1,length(r)-i-1);
+  exit(copy(r,1,i-1));
+
 
 end;
 
 procedure TfrmLuaEngine.scLuaCompleterExecute(Sender: TObject);
 var
-  s: string;
+  s,extra: string;
   w: tpoint;
-  i,j: integer;
+  i,j,si: integer;
   start: integer;
 
   identchars: TSynIdentChars;
+  identchars2: TSynIdentChars;
 
   properties: Tstringlist;
   methods: Tstringlist;
@@ -172,6 +242,8 @@ var
 
   o: TObject;
   c: TComponent absolute o;
+
+  f: boolean;
 begin
   scLuaCompleter.ItemList.Clear;
 
@@ -180,26 +252,9 @@ begin
 
   //parse the symbol the cursor is at
   s:=mscript.LineText;
-  s:=copy(s,1,mscript.CaretX);
+  s:=copy(s,1,mscript.CaretX-1);
 
-  if s[length(s)]<>'.' then exit;
-
-
-//  identchars:=mscript.IdentChars;
-//  identchars:=identchars+['.'];
-  identchars:=['.','a'..'z','A'..'Z','0'..'9'];
-  start:=-1;
-  for i:=length(s)-1 downto 1 do
-  begin
-    if not (s[i] in identchars) then
-    begin
-      start:=i+1;
-      break;
-    end;
-  end;
-
-  if start=-1 then start:=1;
-  s:=copy(s,start,length(s)-start);
+  s:=ParseStringForPath(s,extra);
 
   try
     if luaL_loadstring(L,pchar('return '+s))=0 then
@@ -211,6 +266,7 @@ begin
 
           properties:=tstringlist.create;
           properties.CaseSensitive:=false;
+
 
           methods:=tstringlist.create;
           methods.CaseSensitive:=false;
@@ -235,12 +291,12 @@ begin
                       j:=methods.IndexOf(s);
                       if j<>-1 then
                       begin
-                      //prefer the lowercase version
-                      if s[1] in ['a'..'z'] then
-                        methods[j]:=s; //swap
-                      end
-                      else
-                        methods.add(s);
+                        //prefer the lowercase version
+                        if s[1] in ['a'..'z'] then
+                          methods[j]:=s; //swap
+                        end
+                        else
+                          methods.add(s);
                     end
                     else
                     begin
@@ -273,7 +329,9 @@ begin
                 end;
 
               temp:=ce_getPropertylist(o);
-              properties.AddStrings(temp);
+              if temp<>nil then
+                properties.AddStrings(temp);
+
               temp.free;
             end;
 
@@ -281,11 +339,21 @@ begin
             begin
               i:=lua_gettop(L);
               lua_pushnil(L);
+
+              properties.Duplicates:=dupIgnore;
+              properties.Sorted:=true;
+
               while lua_next(L,i)<>0 do
               begin
                 if lua_type(L,-2)=LUA_TSTRING then
                 begin
                   s:=Lua_ToString(L,-2);
+                  if s='math' then
+                  asm
+                  nop
+                  end;
+                  if lua_isfunction(L,-1) then s[1]:=lowercase(s[1]);
+
                   properties.Add(s);
                 end;
 
@@ -313,6 +381,8 @@ begin
       end;
     end;
   except
+    on e:exception do
+      messagedlg(e.message,mtError,[mbok],0);
   end;
 end;
 
@@ -324,21 +394,30 @@ end;
 procedure TfrmLuaEngine.scLuaCompleterSearchPosition(var APosition: integer);
 var
   s,s2: string;
-  i: integer;
+  i,p: integer;
   start: integer;
 begin
   //get the text from the end till the first .
 
   s:=scLuaCompleter.CurrentString;
-  s:=uppercase(copy(s,2,length(s)));
 
+
+
+  if s='' then exit;
+
+  if s[1]='.' then
+    s:=uppercase(copy(s,2,length(s)))
+  else
+    s:=uppercase(s);
 
   //outputdebugstring(pchar(s));
 
   for i:=0 to scLuaCompleter.ItemList.count-1 do
   begin
     s2:=uppercase(scLuaCompleter.ItemList[i]);
-    if pos(s,s2)=1 then
+
+    p:=pos(s,s2);
+    if p=1 then
     begin
       APosition:=i;
       exit;
@@ -1219,10 +1298,18 @@ begin
 end;
 
 procedure TfrmLuaEngine.FormCreate(Sender: TObject);
-var x: array of integer;
+var
+  x: array of integer;
+  fq: TFontQuality;
 begin
+
   synhighlighter:=TSynLuaSyn.Create(self);
   mscript.Highlighter:=synhighlighter;
+
+  fq:=mscript.Font.Quality;
+  if not (fq in [fqCleartypeNatural, fqDefault]) then
+    mscript.Font.quality:=fqDefault;
+
 
   setlength(x,1);
   if LoadFormPosition(self, x) then
@@ -1257,9 +1344,15 @@ end;
 procedure TfrmLuaEngine.FormShow(Sender: TObject);
 var i: integer;
 begin
+  if overridefont<>nil then
+    mScript.font.size:=overridefont.size
+  else
+    mScript.font.size:=10;
+
   i:=GetFontData(font.reference.handle).Height;
   if i<mScript.Font.Height then
     mScript.Font.Height:=i;
+
 end;
 
 
@@ -1422,7 +1515,6 @@ end;
 procedure TfrmLuaEngine.mScriptKeyDown(Sender: TObject; var Key: Word;
   Shift: TShiftState);
 begin
-
   if (ssCtrl in shift) and (key=vk_return) then
   begin
     btnExecute.click;
@@ -1456,6 +1548,7 @@ begin
   begin
     if key='.' then
     begin
+
       mscript.InsertTextAtCaret('.');
       p:=mscript.RowColumnToPixels(point(mscript.CaretX,mscript.CaretY+1));
       p2:=mscript.ClientToScreen(point(0,0));

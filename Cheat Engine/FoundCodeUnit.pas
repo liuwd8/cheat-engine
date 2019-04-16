@@ -251,7 +251,7 @@ begin
 
     for i:=0 to results^.numberOfEntries-1 do
     begin
-      outputdebugstring('testing entry '+inttostr(i));
+
       case results^.entryType of
         0: basicinfo:=basic^[i];
         1: basicinfo:=extended^[i].basic;
@@ -259,6 +259,7 @@ begin
         3: basicinfo:=extendeds^[i].basic;
       end;
       address:=basicinfo.RIP;
+      outputdebugstring('testing entry '+inttostr(i)+'('+inttohex(address,8)+') - basicinfo.Count='+inttostr(basicinfo.Count+1));
 
       //check if this address is inside the list
       skip:=false;
@@ -269,8 +270,11 @@ begin
           //it's already in the list
           if fcd.multiplerip=false then
           begin
-            inc(TCodeRecord(fcd.foundcodelist.Items[j].data).hitcount, basicinfo.Count);
+            OutputDebugString(inttostr(j)+':Already in the list');
+            TCodeRecord(fcd.foundcodelist.Items[j].data).hitcount:=TCodeRecord(fcd.foundcodelist.Items[j].data).hitcount+(basicinfo.Count+1);
             skip:=true;
+
+            fcd.foundcodelist.Items[j].caption:=inttostr(TCodeRecord(fcd.foundcodelist.Items[j].data).hitcount);
             break;
           end
           else
@@ -325,20 +329,20 @@ begin
         begin
           OutputDebugString('Saving fpu data');
 
-          outputdebugstring('FPUDATA is at offset '+inttostr(qword(@extended^[i].fpudata)-QWORD(@extended^[i])));
+          //outputdebugstring('FPUDATA is at offset '+inttostr(qword(@extended^[i].fpudata)-QWORD(@extended^[i])));
           //outputdebugstring('sizeof(coderecord.context.FltSave)='+inttostr(sizeof(coderecord.context.FltSave)));
           copymemory(@coderecord.context.{$ifdef cpu64}FltSave{$else}ext{$endif}, @extended^[i].fpudata, sizeof(coderecord.context.{$ifdef cpu64}FltSave{$else}ext{$endif}));
 
-          getmem(debug, sizeof(coderecord.context.{$ifdef cpu64}FltSave{$else}ext{$endif}));
-          copymemory(debug, @coderecord.context.{$ifdef cpu64}FltSave{$else}ext{$endif}, sizeof(coderecord.context.{$ifdef cpu64}FltSave{$else}ext{$endif}));
+          //getmem(debug, sizeof(coderecord.context.{$ifdef cpu64}FltSave{$else}ext{$endif}));
+          //copymemory(debug, @coderecord.context.{$ifdef cpu64}FltSave{$else}ext{$endif}, sizeof(coderecord.context.{$ifdef cpu64}FltSave{$else}ext{$endif}));
 
-          getmem(debug2, 512);
-          copymemory(debug2, @extended^[i].fpudata, 512);
+          //getmem(debug2, 512);
+          //copymemory(debug2, @extended^[i].fpudata, 512);
 
-          outputdebugstring('debug='+inttohex(ptruint(debug),8));
-          outputdebugstring('debug2='+inttohex(ptruint(debug2),8));
+          //outputdebugstring('debug='+inttohex(ptruint(debug),8));
+         // outputdebugstring('debug2='+inttohex(ptruint(debug2),8));
 
-          outputdebugstring('@coderecord.context.FltSave='+inttohex(qword(@coderecord.context.{$ifdef cpu64}FltSave{$else}ext{$endif}),8));
+          //outputdebugstring('@coderecord.context.FltSave='+inttohex(qword(@coderecord.context.{$ifdef cpu64}FltSave{$else}ext{$endif}),8));
 
         end;
 
@@ -352,7 +356,7 @@ begin
 
         3: //extended with stack
         begin
-          copymemory(@coderecord.context.{$ifdef cpu64}FltSave{$else}ext{$endif}, @extended^[i].fpudata, sizeof(coderecord.context.{$ifdef cpu64}FltSave{$else}ext{$endif}));
+          copymemory(@coderecord.context.{$ifdef cpu64}FltSave{$else}ext{$endif}, @extendeds^[i].fpudata, sizeof(coderecord.context.{$ifdef cpu64}FltSave{$else}ext{$endif}));
           coderecord.stack.savedsize:=4096;
           getmem(coderecord.stack.stack, 4096);
 
@@ -417,6 +421,8 @@ begin
       coderecord.context.SegEs:=coderecord.dbvmcontextbasic^.ES;
       coderecord.context.SegFs:=coderecord.dbvmcontextbasic^.FS;
       coderecord.context.SegGs:=coderecord.dbvmcontextbasic^.GS;
+
+      coderecord.hitcount:=coderecord.dbvmcontextbasic^.Count+1;
 
       OutputDebugString('adding to the foundlist');
       li:=fcd.FoundCodeList.Items.Add;

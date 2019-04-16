@@ -23,6 +23,7 @@
 #include "vmxsetup.h"
 #include "epthandler.h"
 #include "exports.h"
+#include "luahandler.h"
 
 #ifndef DEBUG
 #define sendstringf(s,x...)
@@ -821,7 +822,7 @@ int vmexit(pcpuinfo currentcpuinfo, UINT64 *registers, void *fxsave)
 //  currentdisplayrow=0;
 //  displayline("%d: %d:%x (%x,%x)                              \n",currentcpuinfo->cpunr,vmeventcount,vmread(vm_exit_reason),vmread(vm_guest_cs),vmread(vm_guest_rip));
 
-  nosendchar[getAPICID()]=1;
+  //nosendchar[getAPICID()]=1;
   result=handleVMEvent(currentcpuinfo, (VMRegisters*)registers, fxsave);
 
   if (dbvm_plugin_exit_post)
@@ -837,7 +838,6 @@ int vmexit(pcpuinfo currentcpuinfo, UINT64 *registers, void *fxsave)
   if ((result!=0) && ((result >> 8) != 0xce)  )//on release, if an unexpected event happens, just fail the instruction and hope the OS won't make a too big mess out of it
   {
     while (wait) ; //remove for release
-
 
     if ((vmread(vm_exit_reason) & 0x7fffffff)==vm_exit_invalid_guest_state) //invalid state
       return raiseGeneralProtectionFault(0); //perhaps this can fix it, else fuck
@@ -1335,6 +1335,7 @@ int vmexit(pcpuinfo currentcpuinfo, UINT64 *registers, void *fxsave)
     sendstringf("|   7: toggle debugmode (%d)             |\n\r",debugmode);
     sendstring("|   8: set breakpoint                   |\n\r");
     sendstring("|   9: display physical memory          |\n\r");
+    sendstring("|   l: Lua Engine                       |\n\r");
     sendstring("|   0: quit virtual machine             |\n\r");
   //sendstring("|   p: previous event                   |\n\r");
     sendstring("\\---------------------------------------/\n\r");
@@ -1616,6 +1617,12 @@ int vmexit(pcpuinfo currentcpuinfo, UINT64 *registers, void *fxsave)
       {
         sendstringf("MSRBitmap: %p (%x)\n",MSRBitmap, VirtualToPhysical((void*)MSRBitmap));
         sendstringf("VM MSRBitmap=%x\n",vmread(0x2004));
+        break;
+      }
+
+      case 'l' :
+      {
+        enterLuaConsole();
         break;
       }
 
@@ -2398,7 +2405,7 @@ void displayPhysicalMemory(void)
   sendstringf("Going to show the memory region %6 to %6 \n\r",StartAddress,StartAddress+nrofbytes);
 
   unsigned char *memory=(unsigned char *)mapPhysicalMemory(StartAddress, nrofbytes);
-  for (i=0; i<nrofbytes; i+=16);
+  for (i=0; i<nrofbytes; i+=16)
   {
     int j;
     unsigned char bt;

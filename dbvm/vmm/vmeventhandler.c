@@ -32,6 +32,16 @@ criticalSection CR3ValueLogCS;
 QWORD *CR3ValueLog; //if not NULL, record
 int CR3ValuePos;
 
+//volatile QWORD TSCOffset=0;
+volatile QWORD globalTSC;
+volatile QWORD lowestTSC=0;
+
+//QWORD cpuidTime=6000; //todo: Make this changeable by the user after launch, or instead of using a TSCOffset just tell the next rdtsc calls to difference of 30 or less (focussing on the currentcpu, or just for 6000 actual ticks)
+//QWORD rdtscTime=6000;
+//QWORD rdtscpTime=10;
+
+criticalSection TSCCS;
+
 int raiseNMI(void)
 {
   VMEntry_interruption_information newintinfo;
@@ -679,6 +689,8 @@ int handle_cr3_callback(pcpuinfo currentcpuinfo,VMRegisters *vmregisters)
 
   //sendstringf("before:\n\r");
   //sendvmstate(currentcpuinfo,vmregisters);
+
+
 
   if (currentcpuinfo->cr3_callback.called_callback)
   {
@@ -1351,11 +1363,12 @@ int handleIOAccess(VMRegisters *vmregisters UNUSED)
   }
 
 
+  vmregisters->rax=vmregisters->rax | 0xff;
+  return 0;
 
   switch (iodata.portnr)
   {
-    vmregisters->rax=vmregisters->rax | 0xff;
-    return 0;
+
 
 
     case SERIALPORT: //3f8
@@ -1764,6 +1777,9 @@ int handleRDMSR(pcpuinfo currentcpuinfo, VMRegisters *vmregisters)
 
 }
 
+
+criticalSection cpuidsourcesCS;
+
 int handleCPUID(VMRegisters *vmregisters)
 {
 //  sendstring("handling CPUID\n\r");
@@ -1777,6 +1793,7 @@ int handleCPUID(VMRegisters *vmregisters)
 
   _cpuid(&(vmregisters->rax),&(vmregisters->rbx),&(vmregisters->rcx),&(vmregisters->rdx));
 
+  /*
   if (oldeax==1)
   {
     //remove the hypervisor active bit (bit 31 in ecx)
@@ -1784,7 +1801,7 @@ int handleCPUID(VMRegisters *vmregisters)
 
     if ((vmregisters->rcx & (1<<26)) && (vmread(vm_guest_cr4) & CR4_OSXSAVE)) //doe sit have OSXSave capabilities and is it enabled ?
       vmregisters->rcx=vmregisters->rcx | (1 << 27); //the guest has activated osxsave , represent that in cpuid
-  }
+  }*/
 
 
   /*
@@ -1845,6 +1862,15 @@ int handleCPUID(VMRegisters *vmregisters)
     x[3]=' ';
 
   }*/
+
+
+  //lower the TSC
+
+
+//  lockedQwordIncrement(&TSCOffset, cpuidTime);
+  getcpuinfo()->lastTSCTouch=_rdtsc();
+
+  //TSCOffset+=cpuidTime;
 
   vmwrite(vm_guest_rip,vmread(vm_guest_rip)+vmread(vm_exit_instructionlength));   //adjust eip to go after this instruction (we handled/emulated it)
   return 0;
@@ -2349,7 +2375,14 @@ int setVM_CR3(pcpuinfo currentcpuinfo, VMRegisters *vmregisters, UINT64 newcr3)
  * Called when the system changes the CR3 register
  */
 {
+  int shouldInvalidate=hasVPIDSupport;
   sendstringf("3:Setting CR3 (%6)\n\r", newcr3);
+
+
+  //This is likely a contextswitch. Update the lowestTSC to normal
+  currentcpuinfo->lowestTSC=_rdtsc(); //todo: apply speedhack speed
+  currentcpuinfo->lastTSCTouch=0;
+
 
   //Ultimap
   if (currentcpuinfo->Ultimap.Active)
@@ -2370,8 +2403,11 @@ instruction does not modify bit 63 of CR3, which is reserved and always 0.
   {
     sendstringf("CR4_PCIDE is enabled and CR3 bit 63 has been set\n");
     newcr3=newcr3&0x7FFFFFFFFFFFFFFFULL;
-    //Invalidate the TLB and caches
-    sendstringf("Invalidating caches\n");
+    //don't invalidate the TLB and caches
+
+    shouldInvalidate=0;
+
+    sendstringf("Skipping the cache invalidating\n");
   }
 
   //check if CR3 sets physical address bits it shouldn't, and if so, GPF, unless it's bit 63
@@ -2415,6 +2451,27 @@ instruction does not modify bit 63 of CR3, which is reserved and always 0.
   if (hasUnrestrictedSupport)
   {
     vmwrite(vm_guest_cr3,newcr3);
+    if (shouldInvalidate)
+    {
+      int type=3;
+  	  INVVPIDDESCRIPTOR desc;
+  	  desc.LinearAddress=0;
+  	  desc.zero=0;
+  	  desc.VPID=1;
+
+  	  if (has_VPID_INVVPIDSingleContextRetainingGlobals)
+        type=3;
+  	  else
+  		if (has_VPID_INVVPIDSingleContext)
+    	  type=2;
+    	else
+    	  type=1; //all
+
+      _invvpid(type, &desc);
+    }
+
+
+
     return 0;
   }
 
@@ -2458,6 +2515,17 @@ int setVM_CR4(pcpuinfo currentcpuinfo, UINT64 newcr4)
   {
     sendstringf("THE GUEST OS WANTS TO SET A BIT THAT SHOULD STAY 0\n\r");
     return 1;
+  }
+
+  if (hasVPIDSupport & (((newCR4 & (CR4_PGE))) != ((oldCR4 & (CR4_PGE)))))
+  {
+	  //invalidate tlb
+
+	  INVVPIDDESCRIPTOR desc;
+	  desc.LinearAddress=0;
+	  desc.zero=0;
+	  desc.VPID=1;
+	  _invvpid(1,&desc);
   }
 
   if (((newCR4 & (CR4_PCIDE))) && ((oldCR4 & (CR4_PCIDE))==0))
@@ -3565,6 +3633,71 @@ int handleSingleStep(pcpuinfo currentcpuinfo)
 }
 
 
+
+int handle_rdtsc(pcpuinfo currentcpuinfo, VMRegisters *vmregisters)
+{
+  QWORD t;
+  double s;
+  double speedhackspeed=1.0f; //0.5f;
+  QWORD lTSC=lowestTSC;
+  QWORD realtime;
+
+
+  if (lTSC<currentcpuinfo->lowestTSC)
+    lTSC=currentcpuinfo->lowestTSC;
+
+
+  realtime=_rdtsc();
+  //csEnter(&TSCCS);
+
+
+
+  //speedhack:
+  s=(realtime-globalTSC)*speedhackspeed;
+
+  t=globalTSC+s;
+
+  if (lTSC==0)
+    lTSC=t;
+
+  if (t<lTSC) lTSC=t; //overflow happened...
+
+
+  if ((realtime-currentcpuinfo->lastTSCTouch)<2000) //todo: and not a forbidden RIP
+  {
+    int off=30+(realtime & 0xf);
+    t=currentcpuinfo->lowestTSC+off;
+    //t=lTSC+off;
+
+    writeMSR(0x838, readMSR(0x838));
+
+    //lockedQwordIncrement(&lowestTSC,off);
+    currentcpuinfo->lowestTSC=t;
+  }
+  else
+  {
+    if (lowestTSC<t)
+      lowestTSC=t;
+    currentcpuinfo->lowestTSC=t;
+  }
+
+  vmregisters->rax=t & 0xffffffff;
+  vmregisters->rdx=t >> 32;
+
+
+
+  vmwrite(vm_guest_rip,vmread(vm_guest_rip)+vmread(vm_exit_instructionlength));
+
+  RFLAGS flags;
+  flags.value=vmread(vm_guest_rflags);
+
+  if (flags.TF==1)
+    vmwrite(vm_pending_debug_exceptions,0x4000);
+
+  return 0;
+}
+
+
 #pragma GCC pop_options
 
 
@@ -3573,12 +3706,21 @@ int handleVMEvent(pcpuinfo currentcpuinfo, VMRegisters *vmregisters, FXSAVE64 *f
   int result;
   int exit_reason=currentcpuinfo->guest_error?currentcpuinfo->guest_error:vmread(vm_exit_reason) & 0x7fffffff;
 
-
-
   if (currentcpuinfo->vmxdata.runningvmx)
   {
     //check if I should handle it, if not
     return handleByGuest(currentcpuinfo, vmregisters);
+  }
+
+#ifdef STATISTICS
+  if (exit_reason<=55)
+    currentcpuinfo->eventcounter[exit_reason]++;
+#endif
+
+  if (currentcpuinfo->eptUpdated==1)
+  {
+	  currentcpuinfo->eptUpdated=0;
+	  ept_invalidate();
   }
 
   switch (exit_reason) //exit reason
@@ -3749,8 +3891,11 @@ int handleVMEvent(pcpuinfo currentcpuinfo, VMRegisters *vmregisters, FXSAVE64 *f
 
 		case 16: //RDTSC
 		{
-			sendstring("RDTSC called\n\r");
-			return 1;
+		  //TSCOffset+=rdtscTime;
+		  //lockedQwordIncrement(&TSCOffset, rdtscTime);
+		  currentcpuinfo->lastTSCTouch=_rdtsc();
+
+		  return handle_rdtsc(currentcpuinfo, vmregisters);
 		}
 
 		case 17: //RSM
@@ -3767,7 +3912,6 @@ int handleVMEvent(pcpuinfo currentcpuinfo, VMRegisters *vmregisters, FXSAVE64 *f
       //sendstring("vmcall\n");
 
       result = handleVMCall(currentcpuinfo, vmregisters);
-
 
       //sendstringf("Returned from handleVMCall, result=%d\n\r",result);
       return result;
@@ -3855,16 +3999,17 @@ int handleVMEvent(pcpuinfo currentcpuinfo, VMRegisters *vmregisters, FXSAVE64 *f
 
 		case vm_exit_monitor_trap_flag:
 		{
+			if ((currentcpuinfo->singleStepping.ReasonsPos) && (currentcpuinfo->singleStepping.Method==1))
+				return handleSingleStep(currentcpuinfo);
 
-      if ((currentcpuinfo->singleStepping.ReasonsPos) && (currentcpuinfo->singleStepping.Method==1))
-        return handleSingleStep(currentcpuinfo);
-
-      sendstring("(Un)expected monitor trap flag\n\r");
+			sendstring("(Un)expected monitor trap flag\n\r");
 #ifndef DEBUG
-      while (1);
+			while (1) ;
+#else
+			return 0;
 #endif
 
-		  return 0;
+
 		}
 
 		case 39: //MONITOR
@@ -3916,8 +4061,15 @@ int handleVMEvent(pcpuinfo currentcpuinfo, VMRegisters *vmregisters, FXSAVE64 *f
 		}
 
 		case 48:
-		  sendstring("EPT violation\n\r");
-		  return handleEPTViolation(currentcpuinfo, vmregisters, (PFXSAVE64)fxsave);
+		{
+			int r;
+
+		    sendstring("EPT violation\n\r");
+		    r=handleEPTViolation(currentcpuinfo, vmregisters, (PFXSAVE64)fxsave);
+
+		    ept_invalidate();
+		    return r;
+		}
 
 		case 49:
 		{
@@ -3933,8 +4085,20 @@ int handleVMEvent(pcpuinfo currentcpuinfo, VMRegisters *vmregisters, FXSAVE64 *f
 
 		case 51:
 		{
-		  sendstring("RDTSCP\n\r");
-		  return 1;
+		  //RDTSCP
+		  //TSCOffset+=rdtscpTime;
+		  //lockedQwordIncrement(&TSCOffset, rdtscpTime);
+
+		  //if (currentcpuinfo->cpunr!=0)
+		  //todo: Callibrate at start to find the system rdtscp calls and don't touch those
+
+		  //IS
+		  //  currentcpuinfo->lastTSCTouch=_rdtsc();
+
+
+		  handle_rdtsc(currentcpuinfo, vmregisters);
+		  vmregisters->rcx=readMSR(IA32_TSC_AUX_MSR);
+		  return 0;
 		}
 
 		case vm_exit_vmx_preemptiontimer_reachedzero:
@@ -3950,6 +4114,9 @@ int handleVMEvent(pcpuinfo currentcpuinfo, VMRegisters *vmregisters, FXSAVE64 *f
 		case 53:
 		{
 		  sendstring("INVVPID\n\r");
+#ifdef DEBUG
+		  while (1);
+#endif
 		  return 1;
 		}
 

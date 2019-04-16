@@ -11,7 +11,7 @@ uses
   WindowsDebugger, debuggerinterfaceAPIWrapper, debuggerinterface,symbolhandler,
   fgl, disassembler, NetworkDebuggerInterface, Clipbrd, commonTypeDefs;
 
-
+{$warn 4056 off}
 
 
 type
@@ -48,7 +48,6 @@ type
     fRunning: boolean;
 
     ResumeProcessWhenIdleCounter: dword; //suspend counter to tell the cleanup handler to resume the process
-
 
 
     function getDebugThreadHanderFromThreadID(tid: dword): TDebugThreadHandler;
@@ -120,7 +119,7 @@ type
     function GetMaxBreakpointCountForThisType(breakpointTrigger: TBreakpointTrigger): integer;
     function DoBreakpointTriggersUseSameDebugRegisterKind(bpt1: TBreakpointTrigger; bpt2: TBreakpointTrigger): boolean;
 
-    procedure ContinueDebugging(continueOption: TContinueOption; runtillAddress: ptrUint=0);
+    procedure ContinueDebugging(continueOption: TContinueOption; runtillAddress: ptrUint=0; handled: boolean=true);
 
     procedure SetEntryPointBreakpoint;
 
@@ -132,6 +131,9 @@ type
     function isWaitingToContinue: boolean;
 
     function getrealbyte(address: ptrUint): byte;
+
+    procedure startBranchMapper(tidlist: tlist=nil);
+    procedure stopBranchMapper;
 
     property CurrentThread: TDebugThreadHandler read getCurrentThread write setCurrentThread;
     property NeedsToSetEntryPointBreakpoint: boolean read fNeedsToSetEntryPointBreakpoint;
@@ -218,6 +220,9 @@ var
   allocs: TCEAllocarray;
 
 begin
+  if IsDebuggerPresent() then
+    self.NameThreadForDebugging('Debugger thread');
+
   if terminated then exit;
 
   execlocation:=0;
@@ -504,6 +509,7 @@ function TDebuggerThread.getDebugThreadHanderFromThreadID(tid: dword): TDebugThr
 var
   i: integer;
 begin
+  result:=nil;
   debuggercs.Enter;
   try
     for i := 0 to threadlist.Count - 1 do
@@ -1542,6 +1548,43 @@ begin
   //it doesn't really matter if it returns false, that would just mean the breakpoint got and it's tracing or has finished tracing
 end;
 
+procedure TDebuggerThread.startBranchMapper(tidlist: TList=nil);
+var
+  i,j: integer;
+  currentthread: TDebugThreadHandler;
+  tl: TList;
+  pid: dword;
+begin
+  debuggercs.enter;
+  try
+    if tidlist<>nil then
+    begin
+      for i := 0 to tidlist.Count - 1 do
+      begin
+        pid:=dword(tidlist.items[i]);
+        currentthread := getDebugThreadHanderFromThreadID(pid);
+        if currentthread<>nil then
+          currentthread.StartBranchMap;
+      end;
+    end
+    else
+    begin
+      for i:=0 to ThreadList.count-1 do
+        TDebugThreadHandler(threadlist[i]).StartBranchMap;
+    end;
+
+
+  finally
+    debuggercs.leave;
+  end;
+end;
+
+procedure TDebuggerThread.stopBranchMapper;
+var i: integer;
+begin
+  for i:=0 to ThreadList.count-1 do
+    TDebugThreadHandler(threadlist[i]).StopBranchMap;
+end;
 
 function TDebuggerThread.CodeFinderStop(codefinder: TFoundCodeDialog): boolean;
 var
@@ -1570,9 +1613,6 @@ begin
   finally
     debuggercs.leave;
   end;
-
-
-
 end;
 
 
@@ -1759,8 +1799,13 @@ begin
 
   frmchangedaddresses:=tfrmChangedAddresses.Create(application) ;
   frmchangedaddresses.address:=address;
+
   tempaddress:=address;
   s:=disassemble(tempaddress); //tempaddress gets changed by this, so don't use the real one
+
+  if defaultDisassembler.LastDisassembleData.isfloat then
+    frmchangedaddresses.cbDisplayType.ItemIndex:=3;
+
 
   if uppercase(defaultDisassembler.LastDisassembleData.opcode)='RET' then
   begin
@@ -2246,25 +2291,24 @@ begin
   end;
 end;
 
-procedure TDebuggerthread.ContinueDebugging(continueOption: TContinueOption; runtillAddress: ptrUint=0);
+procedure TDebuggerthread.ContinueDebugging(continueOption: TContinueOption; runtillAddress: ptrUint=0; handled: boolean=true);
 {
 Sets the way the debugger should continue, and triggers the sleeping thread to wait up and handle this changed event
 }
 var bp: PBreakpoint;
  ct: TDebugThreadHandler;
 begin
+
   ct:=fcurrentThread;
   if ct<>nil then
   begin
-
-
 
     if ct.isWaitingToContinue then
     begin
       fcurrentThread:=nil;
 
       case continueOption of
-        co_run, co_stepinto, co_stepover: ct.continueDebugging(continueOption);
+        co_run, co_stepinto, co_stepover: ct.continueDebugging(continueOption, handled);
         co_runtill:
         begin
           //set a 1 time breakpoint for this thread at the runtilladdress

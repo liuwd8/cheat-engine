@@ -31,6 +31,41 @@ ChangeRegBPEntry *ChangeRegBPList;
 int ChangeRegBPListSize;
 int ChangeRegBPListPos;
 
+void vpid_invalidate()
+{
+  INVVPIDDESCRIPTOR vpidd;
+  vpidd.zero=0;
+  vpidd.LinearAddress=0;
+  vpidd.VPID=1;
+
+  _invvpid(2, &vpidd);
+}
+
+void ept_invalidate()
+{
+	INVEPTDESCRIPTOR eptd;
+	eptd.Zero=0;
+	eptd.EPTPointer=getcpuinfo()->EPTPML4;
+
+	if (has_EPT_INVEPTAllContext)
+	{
+		_invept(2, &eptd);
+	}
+	else
+	if (has_EPT_INVEPTSingleContext)
+	{
+		_invept(1, &eptd);
+	}
+	else
+	{
+		_invept(2, &eptd);//fuck it
+	}
+
+	//vpid_invalidate();
+}
+
+
+
 void ept_reset()
 /*
  * Removes all watches/breakpoints
@@ -60,7 +95,7 @@ void ept_reset()
 
 }
 
-BOOL ept_handleCloakEvent(pcpuinfo currentcpuinfo, QWORD Address)
+BOOL ept_handleCloakEvent(pcpuinfo currentcpuinfo, QWORD Address, QWORD AddressVA)
 /*
  * Checks if the physical address is cloaked, if so handle it and return 1, else return 0
  */
@@ -82,16 +117,67 @@ BOOL ept_handleCloakEvent(pcpuinfo currentcpuinfo, QWORD Address)
     if (CloakedPages[i].PhysicalAddressExecutable==BaseAddress)
     {
       //it's a cloaked page
+      int isMegaJmp=0;
+      QWORD RIP=vmread(vm_guest_rip);
+
       EPT_VIOLATION_INFO evi;
       evi.ExitQualification=vmread(vm_exit_qualification);
 
       sendstringf("ept_handleCloakEvent on the target\n");
 
+      //todo: keep a special list for physical address regions that can see 'the truth' (e.g ntoskrnl.exe and hal.dll on exported data pointers, but anything else will see the fake pointers)
+      //todo2: inverse cloak, always shows the real data except the list of physical address regions provided
+
+      //check for megajmp edits
+      //megajmp: ff 25 00 00 00 00 <address>
+      //So, if 6 bytes before the given address is ff 25 00 00 00 00 , it's a megajmp, IF the RIP is 6 bytes before the given address (and the bytes have changed from original)
+
+      if ((AddressVA-RIP)==6)
+      {
+        //check if the bytes have been changed here
+        DWORD offset=RIP & 0xfff;
+        int size=min(14,0x1000-offset);
+
+        unsigned char *new=(unsigned char *)((QWORD)CloakedPages[i].Executable+offset);
+        unsigned char *original=(unsigned char *)((QWORD)CloakedPages[i].Data+offset);
+
+
+        if (new[0]==0xff) //starts with 0xff, so very likely, inspect more
+        {
+          if (memcmp(new, original, size))
+          {
+            //the memory in this range got changed, check if it's a full megajmp
+            unsigned char megajmpbytes[6]={0xff,0x25,0x00,0x00,0x00,0x00};
+
+            if (memcmp(new, megajmpbytes, min(6,size))==0)
+            {
+              sendstring("Is megajmp");
+              isMegaJmp=1;
+            }
+
+          }
+        }
+      }
+
+
+      //Check if this page has had a MEGAJUMP code edit, if so, check if this is a megajump and in that case on executable
+
       if (evi.X) //looks like this cpu does not support execute only
         *(QWORD *)(currentcpuinfo->eptCloakList[i])=CloakedPages[i].PhysicalAddressExecutable;
       else
-        *(QWORD *)(currentcpuinfo->eptCloakList[i])=CloakedPages[i].PhysicalAddressData;
+      {
+        if (isMegaJmp==0)
+        {
+          //read/write the data
+          *(QWORD *)(currentcpuinfo->eptCloakList[i])=CloakedPages[i].PhysicalAddressData;
+        }
+        else
+        {
+          //read the executable code
+          *(QWORD *)(currentcpuinfo->eptCloakList[i])=CloakedPages[i].PhysicalAddressExecutable;
+        }
 
+      }
       currentcpuinfo->eptCloakList[i]->WA=1;
       currentcpuinfo->eptCloakList[i]->RA=1;
       currentcpuinfo->eptCloakList[i]->XA=1;
@@ -111,6 +197,8 @@ BOOL ept_handleCloakEvent(pcpuinfo currentcpuinfo, QWORD Address)
 
   }
   csLeave(&CloakedPagesCS);
+
+  ept_invalidate();
 
 
   return result;
@@ -157,6 +245,9 @@ int ept_handleCloakEventAfterStep(pcpuinfo currentcpuinfo,  int ID)
 
 
   csLeave(&CloakedPagesCS);
+
+
+  ept_invalidate();
 
   return 0;
 }
@@ -250,13 +341,19 @@ int ept_cloak_activate(QWORD physicalAddress)
 
 
     *(currentcpuinfo->eptCloakList[ID])=temp;
+    _wbinvd();
+    currentcpuinfo->eptUpdated=1;
 
     csLeave(&currentcpuinfo->EPTPML4CS);
 
     currentcpuinfo=currentcpuinfo->next;
+
   }
 
 
+
+
+  ept_invalidate();
 
 
   csLeave(&CloakedPagesCS);
@@ -290,6 +387,8 @@ int ept_cloak_deactivate(QWORD physicalAddress)
 
         unmapPhysicalMemoryGlobal(currentcpuinfo->eptCloakList[i], sizeof(EPT_PTE));
         currentcpuinfo->eptCloakList[i]=NULL;
+        _wbinvd();
+        currentcpuinfo->eptUpdated=1;
 
         currentcpuinfo=currentcpuinfo->next;
       }
@@ -307,6 +406,8 @@ int ept_cloak_deactivate(QWORD physicalAddress)
   }
 
   csLeave(&CloakedPagesCS);
+
+  ept_invalidate();
 
   //if there where cloak event events pending, then next time they violate, the normal handler will make it RWX on the address it should
   return (found==1);
@@ -398,6 +499,10 @@ int ept_cloak_changeregonbp(QWORD physicalAddress, PCHANGEREGONBPINFO changeregi
 {
   int i;
   int result=1;
+
+
+  ept_cloak_removechangeregonbp(physicalAddress);
+
   QWORD physicalBase=physicalAddress & MAXPHYADDRMASKPB;
   ept_cloak_activate(physicalBase); //just making sure
 
@@ -764,7 +869,7 @@ void fillPageEventBasic(PageEventBasic *peb, VMRegisters *registers)
 }
 
 
-inline int ept_isWatchIDPerfectMatch(QWORD address, int ID)
+int ept_isWatchIDPerfectMatch(QWORD address, int ID)
 {
   return ((eptWatchList[ID].Active) &&
           (
@@ -774,7 +879,7 @@ inline int ept_isWatchIDPerfectMatch(QWORD address, int ID)
           );
 }
 
-inline int ept_isWatchIDMatch(QWORD address, int ID)
+int ept_isWatchIDMatch(QWORD address, int ID)
 /*
  * pre: address is already page aligned
  */
@@ -838,7 +943,7 @@ BOOL ept_handleWatchEvent(pcpuinfo currentcpuinfo, VMRegisters *registers, PFXSA
   {
     if (ept_isWatchIDMatch(PhysicalAddressBase, i))
     {
-      if (eptWatchList[ID].Type==0)
+      if (eptWatchList[ID].Type==EPTW_WRITE)
       {
         //must be a write operation error
         if ((evi.W) && (evi.WasWritable==0)) //write operation and writable was 0
@@ -849,7 +954,7 @@ BOOL ept_handleWatchEvent(pcpuinfo currentcpuinfo, VMRegisters *registers, PFXSA
             break;
         }
       }
-      else
+      else if (eptWatchList[ID].Type==EPTW_READWRITE)
       {
         //must be a read or write operation
         if (((evi.W) && (evi.WasWritable==0)) || ((evi.R) && (evi.WasReadable==0)))  //write operation and writable was 0 or read and readable was 0
@@ -858,6 +963,16 @@ BOOL ept_handleWatchEvent(pcpuinfo currentcpuinfo, VMRegisters *registers, PFXSA
           if (ept_isWatchIDPerfectMatch(PhysicalAddress, i))
             break;
         }
+      }
+      else
+      {
+          if ((evi.X) && (evi.WasExecutable==0)) //execute operation and executable was 0
+          {
+            ID=i;
+
+            if (ept_isWatchIDPerfectMatch(PhysicalAddress, i))
+              break;
+          }
       }
     }
   }
@@ -885,7 +1000,7 @@ BOOL ept_handleWatchEvent(pcpuinfo currentcpuinfo, VMRegisters *registers, PFXSA
 
 
   //save this state?
-  if ((evi.R==0) && (evi.X==1))
+  if ((eptWatchList[ID].Type!=EPTW_EXECUTE) && (evi.R==0) && (evi.X==1))
   {
     sendstringf("This was an execute operation and no read. No need to log\n", ID);
     csLeave(&eptWatchListCS);
@@ -1059,24 +1174,38 @@ int ept_handleWatchEventAfterStep(pcpuinfo currentcpuinfo,  int ID)
 {
   sendstringf("ept_handleWatchEventAfterStep %d\n", ID);
 
-
-  if (eptWatchList[ID].Type==0)
+  switch (eptWatchList[ID].Type)
   {
-    sendstringf("Write type. So making it unwritable\n");
-    currentcpuinfo->eptWatchList[ID]->WA=0;
-  }
-  else
-  {
-    sendstringf("read type. So making it unreadable\n");
-    currentcpuinfo->eptWatchList[ID]->RA=0;
-    currentcpuinfo->eptWatchList[ID]->WA=0;
-    if (has_EPT_ExecuteOnlySupport)
-      currentcpuinfo->eptWatchList[ID]->XA=1;
-    else
-      currentcpuinfo->eptWatchList[ID]->XA=0;
+  	  case EPTW_WRITE:
+  	  {
+  	    sendstringf("Write type. So making it unwritable\n");
+  	    currentcpuinfo->eptWatchList[ID]->WA=0;
+  		break;
+  	  }
+
+  	  case EPTW_READWRITE:
+  	  {
+  	    sendstringf("read type. So making it unreadable\n");
+  	    currentcpuinfo->eptWatchList[ID]->RA=0;
+  	    currentcpuinfo->eptWatchList[ID]->WA=0;
+  	    if (has_EPT_ExecuteOnlySupport)
+  	      currentcpuinfo->eptWatchList[ID]->XA=1;
+  	    else
+  	      currentcpuinfo->eptWatchList[ID]->XA=0;
+
+  		break;
+  	  }
+
+  	  case EPTW_EXECUTE:
+  	  {
+  		sendstringf("execute type. So making it non-executable\n");
+  		currentcpuinfo->eptWatchList[ID]->XA=0;
+  		break;
+  	  }
+
   }
 
-
+  ept_invalidate();
   return 0;
 }
 
@@ -1311,10 +1440,10 @@ int ept_watch_activate(QWORD PhysicalAddress, int Size, int Type, DWORD Options,
 
     EPT_PTE temp=*c->eptWatchList[ID]; //using temp in case the cpu doesn't support a XA of 1 with an RA of 0
 
-    if (Type==0)
+    if (Type==EPTW_WRITE) //Writes
       temp.WA=0;
     else
-    if (Type==1)
+    if (Type==EPTW_READWRITE) //read and writes
     {
       if (has_EPT_ExecuteOnlySupport)
         temp.XA=1;
@@ -1323,8 +1452,15 @@ int ept_watch_activate(QWORD PhysicalAddress, int Size, int Type, DWORD Options,
       temp.WA=0;
       temp.RA=0;
     }
+
+    if (Type==EPTW_EXECUTE) //executes
+    {
+    	temp.XA=0;
+    }
     *(c->eptWatchList[ID])=temp;
 
+    _wbinvd();
+    c->eptUpdated=1;
     csLeave(&c->EPTPML4CS);
 
     c=c->next;
@@ -1332,6 +1468,7 @@ int ept_watch_activate(QWORD PhysicalAddress, int Size, int Type, DWORD Options,
 
   //test if needed:  SetPageToWriteThrough(currentcpuinfo->eptwatchlist[ID].EPTEntry);
   //check out 28.3.3.4  (might not be needed due to vmexit, but do check anyhow)
+  //yes, is needed
   //EPTINV
 
 
@@ -1344,6 +1481,8 @@ int ept_watch_activate(QWORD PhysicalAddress, int Size, int Type, DWORD Options,
 
   csLeave(&eptWatchListCS);
 
+  ept_invalidate();
+
   return result;
 }
 
@@ -1352,7 +1491,7 @@ int ept_watch_deactivate(int ID)
  * disable a watch
  * It's possible that a watch event is triggered between now and the end of this function.
  * That will result in a ept_violation event, which causes it to not see that there is a watch event for this
- * As a result, that DBVM threat will try to map the physical address , and if it's already mapped, set it to full access
+ * As a result, that DBVM thread will try to map the physical address , and if it's already mapped, set it to full access
  * In short: it's gonna be ok
  */
 {
@@ -1399,12 +1538,12 @@ int ept_watch_deactivate(int ID)
       csEnter(&c->EPTPML4CS);
 
       EPT_PTE temp=*(c->eptWatchList[ID]);
-      if (eptWatchList[ID].Type==0)
+      if (eptWatchList[ID].Type==EPTW_WRITE)
       {
         sendstringf("  This was a write entry. Making it writable\n");
         temp.WA=1;
       }
-      else
+      else if (eptWatchList[ID].Type==EPTW_READWRITE)
       {
         sendstringf("  This was an access entry. Making it readable and writable");
         temp.RA=1;
@@ -1415,8 +1554,17 @@ int ept_watch_deactivate(int ID)
           temp.XA=1;
         }
       }
+      else
+      {
+          sendstringf("  This was an execute entry. Making it executable");
+          temp.XA=1;
+      }
+
+
 
       *(c->eptWatchList[ID])=temp;
+      _wbinvd();
+      c->eptUpdated=1;
 
       csLeave(&c->EPTPML4CS);
 
@@ -1424,6 +1572,8 @@ int ept_watch_deactivate(int ID)
       c->eptWatchList[ID]=NULL;
       c=c->next;
     }
+
+    ept_invalidate();
   }
   else
   {
@@ -1431,12 +1581,15 @@ int ept_watch_deactivate(int ID)
   }
 
   eptWatchList[ID].Active=0;
+  free(eptWatchList[ID].Log);
+  eptWatchList[ID].Log=NULL;
+
   csLeave(&eptWatchListCS);
   return 0;
 }
 
 
-inline int MTC_RPS(int mt1, int mt2)
+int MTC_RPS(int mt1, int mt2)
 {
   //memory type cache rock paper scissors
   if (mt1==mt2)
@@ -1979,6 +2132,7 @@ VMSTATUS handleEPTViolation(pcpuinfo currentcpuinfo, VMRegisters *vmregisters UN
  //vi.ExitQualification=vmread(vm_exit_qualification);
 
   QWORD GuestAddress=vmread(vm_guest_physical_address);
+  QWORD GuestAddressVA=vmread(vm_guest_linear_address);
 
 
   if (ept_handleWatchEvent(currentcpuinfo, vmregisters, fxsave, GuestAddress))
@@ -1987,7 +2141,7 @@ VMSTATUS handleEPTViolation(pcpuinfo currentcpuinfo, VMRegisters *vmregisters UN
 
 
   //check for cloak
-  if (ept_handleCloakEvent(currentcpuinfo, GuestAddress))
+  if (ept_handleCloakEvent(currentcpuinfo, GuestAddress, GuestAddressVA))
     return 0;
 
   //still here, so not a watch or cloak

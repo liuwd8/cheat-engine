@@ -244,7 +244,7 @@ begin
     filename:=Lua_ToString(L, -1);
     lua_pop(L, lua_gettop(L));
 
-    f:=TCEForm.Create(nil);   //6.3: was application
+    f:=TCEForm.Createnew(nil);   //6.3: was application
     f.LoadFromFile(filename);
 
     luaclass_newClass(L, f);
@@ -326,8 +326,8 @@ var
   ti: PTypeInfo;
 begin
   form:=luaclass_getClassObject(L);
-  ti:=typeinfo(TFormState);
 
+  ti:=typeinfo(TFormState);
   lua_pushstring(L, SetToString(ti, integer(form.FormState),true));
   result:=1;
 end;

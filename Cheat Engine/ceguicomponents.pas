@@ -259,7 +259,7 @@ type TCEListBox=class(TCustomListBox)
     property OnDblClick;
   //  property OnDragDrop;
   //  property OnDragOver;
- //   property OnDrawItem;
+    property OnDrawItem;
     property OnEnter;
   //  property OnEndDrag;
     property OnExit;
@@ -328,7 +328,7 @@ published
   property OnDblClick;
 ////  property OnDragDrop;
  // property OnDragOver;
- // property OnDrawItem;
+  property OnDrawItem;
 //  property OnEndDrag;
   property OnDropDown;
   property OnEditingDone;
@@ -533,6 +533,9 @@ type TCEToggleBox=class(TToggleBox); //there is no custom...
 
 
 type TCEEdit=class(TCustomEdit)
+  private
+    fTextHintFontColor: TColor;
+    fTextHintFontStyle: TFontStyle;
   public
     property AutoSelected;
   published
@@ -596,8 +599,8 @@ type TCEEdit=class(TCustomEdit)
     property SelText;
 
     property TextHint;
-    property TextHintFontColor;
-    property TextHintFontStyle;
+    property TextHintFontColor: Tcolor read fTextHintFontColor write fTextHintFontColor;
+    property TextHintFontStyle: TFontStyle read fTextHintFontStyle write fTextHintFontStyle;
   end;
 
 type TCEForm=class(TCustomForm)
@@ -621,7 +624,7 @@ type TCEForm=class(TCustomForm)
     procedure SaveToFileLFM(filename: string);
     procedure LoadFromFile(filename: string);
     procedure LoadFromFileLFM(filename: string);
-    procedure SaveToXML(Node: TDOMNode);
+    procedure SaveToXML(Node: TDOMNode; dontdeactivate:boolean=false);
     procedure LoadFromXML(Node: TDOMNode);
     procedure RestoreToDesignState;
     procedure SaveCurrentStateasDesign;
@@ -975,7 +978,7 @@ end;
 
 implementation
 
-uses luahandler,luacaller, formdesignerunit;
+uses luahandler,luacaller, formdesignerunit, CheckLst;
 
 resourcestring
   rsInvalidFormData = 'Invalid formdata';
@@ -1198,7 +1201,7 @@ begin
  // showmessage(ss.DataString);
 end;
 
-procedure TCEForm.SaveToXML(Node: TDOMNode);
+procedure TCEForm.SaveToXML(Node: TDOMNode; dontdeactivate: boolean=false);
 var doc: TXMLDocument;
   outputastext: pchar;
   g: TGuid;
@@ -1212,9 +1215,16 @@ var doc: TXMLDocument;
   a: TDOMAttr;
   formnode: TDOMNode;
 begin
-
   wasactive:=active;
-  if active then active:=false;
+
+  if dontdeactivate then
+  begin
+    SaveCurrentStateasDesign;
+  end
+  else
+  begin
+    if active then active:=false;
+  end;
 
   if saveddesign=nil then exit; //nothing to save
 
@@ -1264,7 +1274,8 @@ begin
       FreeMemAndNil(outputastext);
   end;
 
-  active:=wasactive;
+  if dontdeactivate=false then
+    active:=wasactive;
 end;
 
 procedure TCEForm.LoadFromXML(Node: TDOMNode);
@@ -1560,6 +1571,7 @@ initialization
   RegisterClass(TPageControl);
   RegisterClass(TTrayIcon);
   registerclass(TStatusBar);
+  registerclass(TCheckListBox);
 
 
   RegisterPropertyEditor(ClassTypeInfo(TListItems), TCEListView, 'Items', TCEListViewItemsPropertyEditor);
@@ -1584,8 +1596,6 @@ initialization
   RegisterPropertyEditor(TypeInfo(TContextPopupEvent), nil, '', THiddenPropertyEditor);
   RegisterPropertyEditor(TypeInfo(TTVCreateNodeClassEvent), nil, '', THiddenPropertyEditor);
   RegisterPropertyEditor(TypeInfo(TTVCustomCreateNodeEvent), nil, '', THiddenPropertyEditor);
-  RegisterPropertyEditor(TypeInfo(TTVCustomDrawEvent), nil, '', THiddenPropertyEditor);
-  RegisterPropertyEditor(TypeInfo(TTVCustomDrawItemEvent), nil, '', THiddenPropertyEditor);
   RegisterPropertyEditor(TypeInfo(TTVExpandedEvent), nil, '', THiddenPropertyEditor);
   RegisterPropertyEditor(TypeInfo(TTVEditedEvent), nil, '', THiddenPropertyEditor);
   RegisterPropertyEditor(TypeInfo(TTVEditingEvent), nil, '', THiddenPropertyEditor);

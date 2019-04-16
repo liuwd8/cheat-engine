@@ -574,8 +574,17 @@ int setupEPT(pcpuinfo currentcpuinfo)
       DWORD secondarycontrols=vmread(vm_execution_controls_cpu_secondary);
 
       sendstringf("SPBEF_ENABLE_EPT can be set\n");
-
       secondarycontrols=secondarycontrols | SPBEF_ENABLE_EPT;
+
+      if ((IA32_VMX_SECONDARY_PROCBASED_CTLS>>32) & SPBEF_ENABLE_VPID)
+      {
+    	  sendstringf("SPBEF_ENABLE_VPID can also be set\n");
+    	  secondarycontrols=secondarycontrols | SPBEF_ENABLE_VPID;
+    	  vmwrite(vm_vpid,1); //vpid
+
+    	  hasVPIDSupport=1;
+      }
+
       vmwrite(vm_execution_controls_cpu_secondary, secondarycontrols);
 
       //setup the EPT ptr
@@ -606,6 +615,15 @@ int setupEPT(pcpuinfo currentcpuinfo)
       has_EPT_1GBsupport=eptinfo.EPT_1GBSupport;
       has_EPT_2MBSupport=eptinfo.EPT_2MBSupport;
       has_EPT_ExecuteOnlySupport=eptinfo.EPT_executeOnlySupport;
+
+      has_EPT_INVEPTSingleContext=eptinfo.EPT_INVEPTSingleContext;
+      has_EPT_INVEPTAllContext=eptinfo.EPT_INVEPTAllContext;
+
+      has_VPID_INVVPIDIndividualAddress=eptinfo.VPID_INVVPIDIndividualAddress;
+      has_VPID_INVVPIDSingleContext=eptinfo.VPID_INVVPIDSingleContext;
+      has_VPID_INVVPIDAllContext=eptinfo.VPID_INVVPIDAllContext;
+      has_VPID_INVVPIDSingleContextRetainingGlobals=eptinfo.VPID_INVVPIDAllContext;
+
       //eptinfo
 
       QWORD rax=1,rbx=0,rcx=0,rdx=0;
@@ -1115,9 +1133,13 @@ void setupVMX(pcpuinfo currentcpuinfo)
 #endif
 
 
+  globalTSC=_rdtsc();
+
 
 
   vmwrite(0x4004,(UINT64)0xffff); //exception bitmap (0xffff=0-15 0xffffffff=0-31)
+
+ // vmwrite(0x4004,(UINT64)0);
   vmwrite(0x4006,(UINT64)0); //page fault error-code mask
   vmwrite(0x4008,(UINT64)0); //page fault error-code match
   vmwrite(0x400a,(UINT64)1); //cr3-target count
@@ -1234,6 +1256,17 @@ void setupVMX(pcpuinfo currentcpuinfo)
     }
   }
 
+#ifdef TSCHOOK
+  {
+    if ((readMSR(IA32_VMX_PROCBASED_CTLS_MSR)>>32) & RDTSC_EXITING)
+      vmwrite(vm_execution_controls_cpu, vmread(vm_execution_controls_cpu) | RDTSC_EXITING);
+
+    //MSRBitmap[0x80/8]|=1 << (0x10 % 8); //read
+    //MSRBitmap[2048+0x80/8]|=1 << (0x10 % 8); //write
+  }
+#endif
+
+
 
   //----------------GUEST SETUP----------------
  //UINT64 oldloadedos=loadedOS;
@@ -1330,8 +1363,10 @@ void setupVMX(pcpuinfo currentcpuinfo)
 
         if ((IA32_VMX_SECONDARY_PROCBASED_CTLS >> 32) & SPBEF_ENABLE_RDTSCP) //can it enable rdtscp ?
         {
+//#ifndef TSCHOOK
           sendstringf("Enabling rdtscp\n");
           secondarycpu|=SPBEF_ENABLE_RDTSCP;
+//#endif
         }
 
 

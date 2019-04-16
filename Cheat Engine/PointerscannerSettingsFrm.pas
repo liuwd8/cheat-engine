@@ -115,6 +115,7 @@ type
     cbCompareToOtherPointermaps: TCheckBox;
     cbShowAdvancedOptions: TCheckBox;
     cbAddress: TComboBox;
+    cbNegativeOffsets: TCheckBox;
     ComboBox1: TComboBox;
     editMaxLevel: TEdit;
     editStructsize: TEdit;
@@ -170,6 +171,7 @@ type
     procedure cbAllowRuntimeWorkersChange(Sender: TObject);
     procedure cbMaxOffsetsPerNodeChange(Sender: TObject);
     procedure cbMustEndWithSpecificOffsetChange(Sender: TObject);
+    procedure cbNegativeOffsetsChange(Sender: TObject);
     procedure cbShowAdvancedOptionsChange(Sender: TObject);
     procedure cbStaticOnlyChange(Sender: TObject);
     procedure cbStaticStacksChange(Sender: TObject);
@@ -242,7 +244,7 @@ var frmpointerscannersettings: tfrmpointerscannersettings;
 implementation
 
 uses MainUnit, frmMemoryAllocHandlerUnit, MemoryBrowserFormUnit, ProcessHandlerUnit,
-  Globals, parsers;
+  Globals, parsers, DPIHelper;
 
 
 
@@ -342,6 +344,7 @@ begin
 
   btnDelete:=TSpeedButton.Create(self);
   btnDelete.OnClick:=btnDeleteClick;
+
   cbAddress:=TComboBox.Create(self);
   cbAddress.Enabled:=false;
 
@@ -350,6 +353,8 @@ begin
   btnDelete.AnchorSideRight.Control:=self;
   btnDelete.Anchors:=[aktop, akRight];
   btnDelete.BorderSpacing.Right:=4;
+
+
 
   bm:=tbitmap.Create;
   imagelist.GetBitmap(0, bm);
@@ -404,6 +409,12 @@ begin
   lblFilename.Caption:=rsSelectAFile;
 
   height:=cbAddress.Height+2;
+
+
+
+
+  DPIHelper.AdjustSpeedButtonSize(btnSetFile);
+  DPIHelper.AdjustSpeedButtonSize(btnDelete);
 
 
 end;
@@ -975,6 +986,13 @@ begin
 
 end;
 
+procedure TfrmPointerScannerSettings.cbNegativeOffsetsChange(Sender: TObject);
+begin
+  cbCompressedPointerscanFile.enabled:=not cbNegativeOffsets.checked;
+  if cbNegativeOffsets.checked then
+    cbCompressedPointerscanFile.checked:=false;
+end;
+
 procedure TfrmPointerScannerSettings.cbShowAdvancedOptionsChange(Sender: TObject);
 begin
   panel3.visible:=cbShowAdvancedOptions.checked;
@@ -1074,7 +1092,7 @@ begin
 
     panel3.AnchorSideTop.Control:=pdatafilelist;
     panel3.AnchorSideTop.Side:=asrBottom;
-    panel3.BorderSpacing.Top:=50;;
+    panel3.BorderSpacing.Top:=5;;
   end
   else
   begin
@@ -1230,7 +1248,8 @@ begin
   edtReverseStart.clientwidth:=i;
   edtReverseStop.clientwidth:=i;
 
-  i:=max(canvas.TextWidth(editStructsize.text)+4, editStructsize.clientwidth);
+
+  i:=max(canvas.TextWidth('XXXX')+DPIHelper.GetEditBoxMargins(editStructsize), editStructsize.clientwidth);
   editStructsize.clientwidth:=i;
 
   i:=max(btnOk.width, btnCancel.width);
@@ -1252,7 +1271,9 @@ begin
     MainForm.addresslist.getAddressList(tstrings(cbAddress.tag));
 
   UpdateAddressList(cbAddress);
+  AdjustComboboxSize(cbValueType, self.canvas);
   cbAddress.ItemHeight:=cbValueType.ItemHeight;
+  cbAddress.height:=cbValueType.Height;
 
 
 end;

@@ -11,10 +11,10 @@ uses windows, dialogs,forms,classes,LCLIntf, LCLProc, sysutils,registry,ComCtrls
      memscan,plugin, hotkeyhandler,frmProcessWatcherunit, newkernelhandler,
      debuggertypedefinitions, commonTypeDefs;
 
-const ceversion=6.81;
+const ceversion=6.8999;
 
 resourcestring
-  cename = 'Cheat Engine 6.8.1';
+  cename = 'Cheat Engine 6.8.x';
   rsPleaseWait = 'Please Wait!';
 
 procedure UpdateToolsMenu;
@@ -24,7 +24,7 @@ procedure initcetitle;
 
 
 
-const beta=''; //empty this for a release
+const beta=' Alpha'; //empty this for a release
 
 var
   CEnorm:string;
@@ -304,27 +304,27 @@ begin
           if reg.ValueExists('Set Speedhack speed 1 Hotkey') then
             reg.ReadBinaryData('Set Speedhack speed 1 Hotkey',temphotkeylist[4][0],10);
 
-          speedhackspeed1.keycombo:=temphotkeylist[3];
+          speedhackspeed1.keycombo:=temphotkeylist[4];
 
           if reg.ValueExists('Set Speedhack speed 2 Hotkey') then
             reg.ReadBinaryData('Set Speedhack speed 2 Hotkey',temphotkeylist[5][0],10);
 
-          speedhackspeed2.keycombo:=temphotkeylist[4];
+          speedhackspeed2.keycombo:=temphotkeylist[5];
 
           if reg.ValueExists('Set Speedhack speed 3 Hotkey') then
             reg.ReadBinaryData('Set Speedhack speed 3 Hotkey',temphotkeylist[6][0],10);
 
-          speedhackspeed3.keycombo:=temphotkeylist[5];
+          speedhackspeed3.keycombo:=temphotkeylist[6];
 
           if reg.ValueExists('Set Speedhack speed 4 Hotkey') then
             reg.ReadBinaryData('Set Speedhack speed 4 Hotkey',temphotkeylist[7][0],10);
 
-          speedhackspeed4.keycombo:=temphotkeylist[6];
+          speedhackspeed4.keycombo:=temphotkeylist[7];
 
           if reg.ValueExists('Set Speedhack speed 5 Hotkey') then
             reg.ReadBinaryData('Set Speedhack speed 5 Hotkey',temphotkeylist[8][0],10);
 
-          speedhackspeed5.keycombo:=temphotkeylist[7];
+          speedhackspeed5.keycombo:=temphotkeylist[8];
 
           if reg.ValueExists('Increase Speedhack speed') then
             reg.ReadBinaryData('Increase Speedhack speed',temphotkeylist[9][0],10);

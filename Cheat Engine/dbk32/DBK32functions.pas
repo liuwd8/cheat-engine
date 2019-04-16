@@ -362,7 +362,7 @@ procedure ultimap_pause;
 procedure ultimap_resume;
 
 
-procedure ultimap2(processid: dword; size: dword; outputfolder: widestring; ranges: TURangeArray; noPMI: boolean=false);
+procedure ultimap2(processid: dword; size: dword; outputfolder: widestring; ranges: TURangeArray; noPMI: boolean=false; logUserMode: boolean=true; logKernelMode: boolean=false);
 procedure ultimap2_disable;
 function  ultimap2_waitForData(timeout: dword; var output: TUltimap2DataEvent): boolean;
 procedure ultimap2_continue(cpunr: integer);
@@ -507,13 +507,15 @@ begin
 end;
 
 
-procedure ultimap2(processid: dword; size: dword; outputfolder: widestring; ranges: TURangeArray; noPMI: boolean=false);
+procedure ultimap2(processid: dword; size: dword; outputfolder: widestring; ranges: TURangeArray; noPMI: boolean=false; logUserMode: boolean=true; logKernelMode: boolean=false);
 var
   inp:record
     PID: UINT32;
     BufferSize: UINT32;
     rangecount: UINT32;
     noPMI:      UINT32;
+    UserMode:   UINT32;
+    KernelMode: UINT32;
     range: array[0..7] of TURange;
     filename: array [0..199] of WideChar;
   end;
@@ -553,6 +555,16 @@ begin
     inp.noPMI:=1
   else
     inp.noPMI:=0;
+
+  if logusermode then
+    inp.UserMode:=1
+  else
+    inp.UserMode:=0;
+
+  if logkernelmode then
+    inp.KernelMode:=1
+  else
+    inp.KernelMode:=0;
 
   for i:=0 to inp.rangecount-1 do
   begin
@@ -3153,43 +3165,49 @@ begin
       if hscmanager<>0 then
       begin
         //try loading ultimap
+        hUltimapService:=0;
+        hultimapdevice:=INVALID_HANDLE_VALUE;
 
-        hUltimapService := OpenService(hSCManager, pchar(ultimapservicename), SERVICE_ALL_ACCESS);
-        if hUltimapService=0 then
+        if fileexists(ultimapdriverloc) then
         begin
-          hUltimapService:=CreateService(
-             hSCManager,           // SCManager database
-             pchar(ultimapservicename),   // name of service
-             pchar(ultimapservicename),   // name to display
-             SERVICE_ALL_ACCESS,   // desired access
-             SERVICE_KERNEL_DRIVER,// service type
-             SERVICE_DEMAND_START, // start type
-             SERVICE_ERROR_NORMAL, // error control type
-             pchar(ultimapdriverloc),     // service's binary
-             nil,                  // no load ordering group
-             nil,                  // no tag identifier
-             nil,                  // no dependencies
-             nil,                  // LocalSystem account
-             nil                   // no password
-          );
-        end
-        else
-        begin
-          //make sure the service points to the right file
-          ChangeServiceConfig(hultimapservice,
-                              SERVICE_KERNEL_DRIVER,
-                              SERVICE_DEMAND_START,
-                              SERVICE_ERROR_NORMAL,
-                              pchar(ultimapdriverloc),
-                              nil,
-                              nil,
-                              nil,
-                              nil,
-                              nil,
-                              pchar(ultimapservicename));
+          hUltimapService := OpenService(hSCManager, pchar(ultimapservicename), SERVICE_ALL_ACCESS);
+          if hUltimapService=0 then
+          begin
+            hUltimapService:=CreateService(
+               hSCManager,           // SCManager database
+               pchar(ultimapservicename),   // name of service
+               pchar(ultimapservicename),   // name to display
+               SERVICE_ALL_ACCESS,   // desired access
+               SERVICE_KERNEL_DRIVER,// service type
+               SERVICE_DEMAND_START, // start type
+               SERVICE_ERROR_NORMAL, // error control type
+               pchar(ultimapdriverloc),     // service's binary
+               nil,                  // no load ordering group
+               nil,                  // no tag identifier
+               nil,                  // no dependencies
+               nil,                  // LocalSystem account
+               nil                   // no password
+            );
+          end
+          else
+          begin
+            //make sure the service points to the right file
+            ChangeServiceConfig(hultimapservice,
+                                SERVICE_KERNEL_DRIVER,
+                                SERVICE_DEMAND_START,
+                                SERVICE_ERROR_NORMAL,
+                                pchar(ultimapdriverloc),
+                                nil,
+                                nil,
+                                nil,
+                                nil,
+                                nil,
+                                pchar(ultimapservicename));
+          end;
+
         end;
 
-        hultimapdevice:=INVALID_HANDLE_VALUE;
+
         if hUltimapService<>0 then
         begin
           sav:=nil;

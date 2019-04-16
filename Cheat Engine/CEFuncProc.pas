@@ -86,7 +86,7 @@ procedure Open_Process;
 Procedure Shutdown;
 function KeyToStr(key:word):string;
 
-
+procedure EnableWindowsSymbols(warn: boolean=true);
 
 function eflags_setCF(flagvalue: dword; value: integer): DWORD;
 function eflags_setPF(flagvalue: dword; value: integer): DWORD;
@@ -343,7 +343,8 @@ implementation
 uses disassembler,CEDebugger,debughelper, symbolhandler, symbolhandlerstructs,
      frmProcessWatcherUnit, kerneldebugger, formsettingsunit, MemoryBrowserFormUnit,
      savedscanhandler, networkInterface, networkInterfaceApi, vartypestrings,
-     processlist, Parsers, Globals, xinput, luahandler, LuaClass, LuaObject;
+     processlist, Parsers, Globals, xinput, luahandler, LuaClass, LuaObject,
+     UnexpectedExceptionsHelper, LazFileUtils;
 
 
 resourcestring
@@ -834,6 +835,10 @@ begin
 
         injectionlocation:=VirtualAllocEx(processhandle,nil,4096,MEM_RESERVE or MEM_COMMIT,PAGE_EXECUTE_READWRITE);
 
+        if allocsAddToUnexpectedExceptionList then
+          AddUnexpectedExceptionRegion(ptruint(injectionlocation),4096);
+
+
         if injectionlocation=nil then raise exception.Create(rsFailedToAllocateMemory);
 
         dlllocation:=dllname;
@@ -1054,8 +1059,6 @@ begin
           end;
 
           try
-
-
             if (counter=0) then
               raise exception.Create(rsTheInjectionThreadTookLongerThan10SecondsToExecute);
 
@@ -1082,13 +1085,18 @@ begin
         FreeLibrary(h);
 
         if injectionlocation<>nil then
+        begin
           virtualfreeex(processhandle,injectionlocation,0,MEM_RELEASE);
+          RemoveUnexpectedExceptionRegion(ptruint(injectionlocation),0);
+        end;
       end;
 
     end;
   except
     on e:exception do
+    begin
       forceLoadModule(dllname, functiontocall, 'dllInject failed: '+e.message);
+    end;
   end;
 end;
 
@@ -2138,7 +2146,7 @@ var previouswinhandle, winhandle: Hwnd;
     end;
   end;
   plpos: integer;
-  SNAPHandle: THandle;
+  SNAPHandle: THandle=INVALID_HANDLE_VALUE;
   lppe: NewKernelHandler.TProcessEntry32;
 
   found :boolean;
@@ -2317,6 +2325,9 @@ begin
     freememandnil(pidlist);
     freememandnil(basehandlelist);
     setlength(pl,0);
+
+    if SNAPHandle<>INVALID_HANDLE_VALUE then
+      closehandle(SNAPHandle);
   end;
 end;
 
@@ -3413,6 +3424,28 @@ begin
     SetKernelObjectSecurity(h, DACL_SECURITY_INFORMATION, sa.lpSecurityDescriptor);
 end;
 
+procedure EnableWindowsSymbols(warn: boolean=true);
+var
+  path: string;
+  shortpath: pchar;
+begin
+  if (length(trim(tempdiralternative))>2) and dontusetempdir then
+    path:=trim(tempdiralternative)
+  else
+    path:=GetTempDir;
+
+  path:=path+'Cheat Engine Symbols';
+
+  ForceDirectory(path);
+  if warn and (messagedlg('This can take some time if you are missing the PDB''s and CE will look frozen. Are you sure?', mtWarning, [mbyes,mbno],0,mbno)<>mryes) then exit;
+
+  getmem(shortpath,256);
+  GetShortPathName(pchar(path),shortpath,255);
+  symhandler.setsearchpath('srv*'+shortpath+'*https://msdl.microsoft.com/download/symbols');
+  freemem(shortpath);
+
+  symhandler.reinitialize(true);
+end;
 
 
 procedure Log(s: string);

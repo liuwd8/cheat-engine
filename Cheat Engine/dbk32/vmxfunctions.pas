@@ -69,6 +69,9 @@ const
   VMCALL_ADD_MEMORY = 57;
   VMCALL_DISABLE_EPT = 58;
 
+  VMCALL_GET_STATISTICS = 59;
+  VMCALL_WATCH_EXECUTES = 60;
+
 
 
   //---
@@ -256,10 +259,9 @@ type
 //      3: (extendeds: TPageEventExtendedStackArray);
   end;
 
-  type PPageEventListDescriptor=^TPageEventListDescriptor;
+  PPageEventListDescriptor=^TPageEventListDescriptor;
 
-
-  type TChangeRegOnBPInfo=packed record
+  TChangeRegOnBPInfo=packed record
     Flags: bitpacked record
       changeRAX: 0..1;        //0
       changeRBX: 0..1;        //1
@@ -313,6 +315,18 @@ type
 
   end;
 
+  TDBVMStatistics=packed record
+    eventCountersCurrentCPU: array [0..55] of integer;
+    eventCountersAllCPUS: array [0..55] of integer;
+  end;
+
+  TDBVMBreakpoint=record
+    VirtualAddress: qword;
+    PhysicalAddress: qword;
+    breakoption: integer;
+  end;
+  PDBVMBreakpoint=^TDBVMBreakpoint;
+
 
 function dbvm_version: dword; stdcall;
 function dbvm_changepassword(password1,password2: dword):dword; stdcall;
@@ -360,6 +374,7 @@ procedure dbvm_testPSOD;
 
 function dbvm_watch_writes(PhysicalAddress: QWORD; size: integer; Options: DWORD; MaxEntryCount: Integer): integer;
 function dbvm_watch_reads(PhysicalAddress: QWORD; size: integer; Options: DWORD; MaxEntryCount: Integer): integer;
+function dbvm_watch_executes(PhysicalAddress: QWORD; size: integer; Options: DWORD; MaxEntryCount: Integer): integer;
 function dbvm_watch_retrievelog(ID: integer; results: PPageEventListDescriptor; var resultsize: integer): integer;
 function dbvm_watch_delete(ID: integer): boolean;
 
@@ -372,6 +387,8 @@ function dbvm_cloak_changeregonbp(PhysicalAddress: QWORD; var changeregonbpinfo:
 function dbvm_cloak_removechangeregonbp(PhysicalAddress: QWORD): integer;
 
 procedure dbvm_ept_reset;
+
+function dbvm_get_statistics(out statistics: TDBVMStatistics):qword;
 
 
 
@@ -389,6 +406,8 @@ function ReadProcessMemoryWithCloakSupport(hProcess: THandle; lpBaseAddress, lpB
 function WriteProcessMemoryWithCloakSupport(hProcess: THandle; lpBaseAddress, lpBuffer: Pointer; nSize: DWORD; var lpNumberOfBytesWritten: PTRUINT): BOOL; stdcall;
 function hasCloakedRegionInRange(virtualAddress: qword; size: integer; out VA:qword; out PA: qword): boolean;
 
+procedure dbvm_getBreakpointList(l: TStrings);
+
 var
   vmx_password1: dword;
   vmx_password2: dword;
@@ -402,7 +421,8 @@ var
 implementation
 
 uses DBK32functions, cefuncproc, PEInfoFunctions, NewKernelHandler, syncobjs,
-  ProcessHandlerUnit, Globals, AvgLvlTree, maps;
+  ProcessHandlerUnit, Globals, AvgLvlTree, maps, debuggertypedefinitions,
+  DebugHelper, frmBreakpointlistunit;
 
 resourcestring
 rsInvalidInstruction = 'Invalid instruction';
@@ -413,7 +433,7 @@ var vmcall :function(vmcallinfo:pointer; level1pass: dword): PtrUInt; stdcall;
 var vmcall2 :function(vmcallinfo:pointer; level1pass: dword; secondaryOut: pptruint): PtrUInt; stdcall;
 
 
-  cloakedregionsCS: TCriticalSection;
+  cloakedregionsCS: TCriticalSection=nil;
 
   cloakedregions: array of record //using an array instead of map as there will likely be less than 1000 entries
         VirtualAddress: qword;
@@ -421,6 +441,9 @@ var vmcall2 :function(vmcallinfo:pointer; level1pass: dword; secondaryOut: pptru
       end;
 
   cloakedregioncache: tmap;
+
+  breakpoints: array of TDBVMBreakpoint;
+  breakpointsCS: TCriticalSection=nil;
 
 type
   TCloakedMemInfo=record
@@ -1245,6 +1268,44 @@ begin
   OutputDebugString('returning '+inttostr(result));
 end;
 
+function dbvm_watch_executes(PhysicalAddress: QWORD; size: integer; Options: DWORD; MaxEntryCount: Integer): integer;
+var vmcallinfo: packed record
+      structsize: dword;   //0
+      level2pass: dword;   //4
+      command: dword;      //8
+      PhysicalAddress: QWORD; //12
+      Size: integer;          //20
+      Options: DWORD;         //24
+      MaxEntryCount: integer; //28
+      ID: integer; //return value
+    end;
+    r: integer;
+begin
+  result:=-1;
+  outputdebugstring(format('dbvm_watch_executes(%x,%d,%x,%d)',[PhysicalAddress, Size, Options, MaxEntryCount]));
+  options:=options and (not EPTO_PMI_WHENFULL); //make sure this is not used
+
+  vmcallinfo.structsize:=sizeof(vmcallinfo);
+  vmcallinfo.level2pass:=vmx_password2;
+  vmcallinfo.command:=VMCALL_WATCH_EXECUTES;
+  vmcallinfo.PhysicalAddress:=PhysicalAddress;
+  vmcallinfo.Size:=size;
+  vmcallinfo.Options:=Options;
+  vmcallinfo.MaxEntryCount:=MaxEntryCount;
+  vmcallinfo.ID:=-1;
+
+  OutputDebugString('MaxEntryCount at offset '+inttostr(QWORD(@vmcallinfo.MaxEntryCount)-QWORD(@vmcallinfo)));
+
+  OutputDebugString('vmcallinfo.MaxEntryCount='+inttostr(vmcallinfo.MaxEntryCount));
+  r:=vmcall(@vmcallinfo,vmx_password1);
+  OutputDebugString('r='+inttostr(r));
+
+  if r=0 then
+    result:=vmcallinfo.ID;
+
+  OutputDebugString('returning '+inttostr(result));
+end;
+
 function dbvm_watch_retrievelog(ID: integer; results: PPageEventListDescriptor; var resultsize: integer): integer;
 var vmcallinfo: packed record
   structsize: dword;
@@ -1256,7 +1317,7 @@ var vmcallinfo: packed record
   copied: DWORD;
 end;
 begin
-  OutputDebugString('vmxfunctions.pas: dbvm_watch_retrievelog (results='+inttohex(QWORD(results),8)+' resultsize='+inttostr(resultsize)+')');
+  //OutputDebugString('vmxfunctions.pas: dbvm_watch_retrievelog (results='+inttohex(QWORD(results),8)+' resultsize='+inttostr(resultsize)+')');
   result:=1;
   vmcallinfo.structsize:=sizeof(vmcallinfo);
   vmcallinfo.level2pass:=vmx_password2;
@@ -1269,7 +1330,7 @@ begin
   result:=vmcall(@vmcallinfo,vmx_password1);  //returns 2 on a too small size
   resultsize:=vmcallinfo.resultssize;
 
-  OutputDebugString('dbvm_watch_retrievelog vmcall returned '+inttostr(result)+'  (resultsize='+inttostr(resultsize)+')');
+  //OutputDebugString('dbvm_watch_retrievelog vmcall returned '+inttostr(result)+'  (resultsize='+inttostr(resultsize)+')');
 
   resultsize:=vmcallinfo.resultssize;
 end;
@@ -1312,8 +1373,7 @@ begin
 
   if ((result=0) or (result=1)) and (virtualAddress<>0) then
   begin
-    if cloakedregionscs=nil then
-      cloakedregionscs:=TCriticalSection.Create;
+
 
     cloakedregionscs.enter;
 
@@ -1357,7 +1417,7 @@ begin
 
   if result and (cloakedregionscs<>nil) then
   begin
-    OutputDebugString('dbvm_cloak_deactivate with a registered virtual address in the list');
+    OutputDebugString('dbvm_cloak_deactivate');
     cloakedregionscs.enter;
     try
       for i:=0 to length(cloakedregions)-1 do
@@ -1412,6 +1472,7 @@ begin
   result:=vmcall(@vmcallinfo,vmx_password1);
 end;
 
+
 function dbvm_cloak_changeregonbp(PhysicalAddress: QWORD; var changeregonbpinfo: TChangeRegOnBPInfo; VirtualAddress: qword=0): integer;
 var
   vmcallinfo: packed record
@@ -1432,39 +1493,115 @@ begin
   vmcallinfo.changeregonbpinfo:=changeregonbpinfo;
   result:=vmcall(@vmcallinfo,vmx_password1);
 
-  if (result=0) and (virtualAddress<>0) then
-  try
-    PhysicalBase:=PhysicalAddress and MAXPHYADDRMASKPB;
+  if (result=0) then
+  begin
+    breakpointsCS.enter;
+    setlength(breakpoints,length(breakpoints)+1);
+    breakpoints[length(breakpoints)-1].PhysicalAddress:=PhysicalAddress;
+    breakpoints[length(breakpoints)-1].VirtualAddress:=virtualAddress;
+    breakpoints[length(breakpoints)-1].BreakOption:=integer(bo_ChangeRegister);
+    breakpointscs.leave;
 
-    for i:=0 to length(cloakedregions)-1 do
-      if cloakedregions[i].PhysicalAddress=PhysicalBase then exit;   //already in the list
+    if (VirtualAddress<>0) then
+    begin
+      cloakedregionscs.Enter;
+      try
+        PhysicalBase:=PhysicalAddress and MAXPHYADDRMASKPB;
 
-    i:=length(cloakedregions);
-    setlength(cloakedregions,i+1);
-    cloakedregions[i].PhysicalAddress:=PhysicalBase;
-    cloakedregions[i].virtualAddress:=virtualAddress and qword($fffffffffffff000);
+        for i:=0 to length(cloakedregions)-1 do
+          if cloakedregions[i].PhysicalAddress=PhysicalBase then exit;   //already in the list
 
-    outputdebugstring('added it to entry '+inttostr(i));
-  finally
-    cloakedregionscs.leave;
+        i:=length(cloakedregions);
+        setlength(cloakedregions,i+1);
+        cloakedregions[i].PhysicalAddress:=PhysicalBase;
+        cloakedregions[i].virtualAddress:=virtualAddress and qword($fffffffffffff000);
+
+        outputdebugstring('added it to entry '+inttostr(i));
+      finally
+        cloakedregionscs.leave;
+      end;
+    end;
+
+    if (GetCurrentThreadId=MainThreadID) and (frmbreakPointList<>nil) and (frmbreakPointList.visible) then
+      frmbreakPointList.updatebplist;
   end;
-
 end;
 
 function dbvm_cloak_removechangeregonbp(PhysicalAddress: QWORD): integer;
-var vmcallinfo: packed record
-  structsize: dword;
-  level2pass: dword;
-  command: dword;
-  PhysicalAddress: QWORD;
-end;
+var
+  vmcallinfo: packed record
+    structsize: dword;
+    level2pass: dword;
+    command: dword;
+    PhysicalAddress: QWORD;
+  end;
+  i,j: integer;
 begin
   vmcallinfo.structsize:=sizeof(vmcallinfo);
   vmcallinfo.level2pass:=vmx_password2;
   vmcallinfo.command:=VMCALL_CLOAK_REMOVECHANGEREGONBP;
   vmcallinfo.PhysicalAddress:=PhysicalAddress;
   result:=vmcall(@vmcallinfo,vmx_password1);
+
+  breakpointsCS.Enter;
+  for i:=0 to length(breakpoints)-1 do
+    if breakpoints[i].PhysicalAddress=PhysicalAddress then
+    begin
+      for j:=i to length(breakpoints)-2 do
+        breakpoints[j]:=breakpoints[j+1];
+
+      setlength(breakpoints, length(breakpoints)-1);
+    end;
+
+  if (GetCurrentThreadId=MainThreadID) and (frmbreakPointList<>nil) and (frmbreakPointList.visible) then
+    frmbreakPointList.updatebplist;
+
+  breakpointsCS.Leave;
 end;
+
+procedure dbvm_getBreakpointList(l: TStrings);
+//gets the breakpoint list, the caller will need to free the entries after call
+var
+  i: integer;
+  s: string;
+begin
+  s:='';
+  breakpointscs.enter;
+  try
+    for i:=0 to length(breakpoints)-1 do
+    begin
+      if breakpoints[i].VirtualAddress<>0 then
+        s:=inttohex(breakpoints[i].VirtualAddress,8);
+
+      s:=s+' ('+inttohex(breakpoints[i].physicaladdress,8)+')';
+      l.Add(s);
+    end
+  finally
+    breakpointscs.leave;
+  end;
+end;
+
+
+function dbvm_get_statistics(out statistics: TDBVMStatistics):qword;
+var
+  vmcallinfo: packed record
+    structsize: dword;
+    level2pass: dword;
+    command: dword;
+    eventcountercpu: array [0..55] of integer;
+    eventcounterall: array [0..55] of integer;
+  end;
+begin
+  vmcallinfo.structsize:=sizeof(vmcallinfo);
+  vmcallinfo.level2pass:=vmx_password2;
+  vmcallinfo.command:=VMCALL_GET_STATISTICS;
+  result:=vmcall(@vmcallinfo,vmx_password1);
+
+  CopyMemory(@statistics.eventCountersCurrentCPU[0],@vmcallinfo.eventcountercpu,sizeof(int)*56);
+  CopyMemory(@statistics.eventCountersAllCPUS[0],@vmcallinfo.eventcounterall,sizeof(int)*56);
+end;
+
+
 
 
 procedure dbvm_ept_reset;
@@ -2132,7 +2269,10 @@ initialization
       vmcall:=vmcallSupported_intel;
       vmcall2:=vmcallSupported2_intel;
     end;
-
   end;
+
+  cloakedregionscs:=TCriticalSection.Create;
+  breakpointscs:=TCriticalSection.Create;
+
   {$endif}
 end.

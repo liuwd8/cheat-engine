@@ -149,8 +149,10 @@ void psod(void)
         VBE_ResetStart();
 
 
+        /*
         while (1)
           _pause();
+          */
 
       }
 
@@ -1341,7 +1343,7 @@ int _handleVMCallInstruction(pcpuinfo currentcpuinfo, VMRegisters *vmregisters, 
       sendstringf("VMCALL_WATCH_WRITES\n");
       if (hasEPTsupport)
       {
-        vmregisters->rax=vmcall_watch_activate((PVMCALL_WATCH_PARAM)vmcall_instruction,0); //write
+        vmregisters->rax=vmcall_watch_activate((PVMCALL_WATCH_PARAM)vmcall_instruction,EPTW_WRITE); //write
         sendstringf("vmcall_watch_activate returned %d and ID %d\n", vmregisters->rax, ((PVMCALL_WATCH_PARAM)vmcall_instruction)->ID);
 
       }
@@ -1358,7 +1360,21 @@ int _handleVMCallInstruction(pcpuinfo currentcpuinfo, VMRegisters *vmregisters, 
       sendstringf("VMCALL_WATCH_READS\n");
       if (hasEPTsupport)
       {
-        vmregisters->rax=vmcall_watch_activate((PVMCALL_WATCH_PARAM)vmcall_instruction,1); //read
+        vmregisters->rax=vmcall_watch_activate((PVMCALL_WATCH_PARAM)vmcall_instruction,EPTW_READWRITE); //read
+      }
+      else
+      {
+        vmregisters->rax = 0xcedead;
+      }
+      break;
+    }
+
+    case VMCALL_WATCH_EXECUTES:
+    {
+      sendstringf("VMCALL_WATCH_EXECUTES\n");
+      if (hasEPTsupport)
+      {
+        vmregisters->rax=vmcall_watch_activate((PVMCALL_WATCH_PARAM)vmcall_instruction,EPTW_EXECUTE); //read
       }
       else
       {
@@ -1643,6 +1659,36 @@ int _handleVMCallInstruction(pcpuinfo currentcpuinfo, VMRegisters *vmregisters, 
       break;
     }
     */
+
+#ifdef STATISTICS
+    case VMCALL_GET_STATISTICS:
+    {
+    	int globaleventcounter[56];
+    	QWORD totalevents=0;
+    	pcpuinfo c=firstcpuinfo;
+    	PVMCALL_GET_STATISTICS_PARAM p=(PVMCALL_GET_STATISTICS_PARAM)vmcall_instruction;
+    	copymem(&p->eventcounter[0],&currentcpuinfo->eventcounter[0],sizeof(int)*56);
+
+    	zeromemory(&globaleventcounter[0],sizeof(int)*56);
+    	while (c)
+    	{
+    		int i;
+    		for (i=0;i<56;i++)
+    		{
+    			globaleventcounter[i]+=c->eventcounter[i];
+    			totalevents+=c->eventcounter[i];
+    		}
+
+    		c=c->next;
+    	}
+
+    	copymem(&p->globaleventcounter[0],&globaleventcounter[0],sizeof(int)*56);
+
+
+    	vmregisters->rax=totalevents;
+    	break;
+    }
+#endif
 
 
     default:

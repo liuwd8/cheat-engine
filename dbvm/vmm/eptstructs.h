@@ -275,7 +275,7 @@ typedef struct
 {
   QWORD PhysicalAddress;
   int Size;
-  int Type; //0=write, 1=access
+  int Type; //0=write, 1=access,2=execute
   DWORD Options;
   int Active;
   int CopyInProgress; //if 1 events will be ignored
@@ -288,6 +288,8 @@ typedef struct
   QWORD PhysicalAddressData; //the PA of the page shown when read/write operations happen
   void *Data;
   void *Executable;
+  //int *MegaJmpMap; //when the PhysicalAddressExecutable gets changed, it will keep track of code changes, including megajmp's
+  //int MegaJmpCount;
 } CloakedPageInfo, *PCloakedPageInfo;
 
 typedef struct

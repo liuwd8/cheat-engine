@@ -710,6 +710,8 @@ resourcestring
   rsPointer = 'Pointer';
   rsByteWithValue = 'Byte: %s';
   rs2ByteWithValue2 = '2 Byte: %s';
+  rsWarnAboutLessThan2Addresses = 'It''s not recommended to run the structure '
+    +'compare with just one address in a group';
 
 
 var
@@ -1559,6 +1561,8 @@ var
 
   customtype: TCustomType;
   ctp: PCustomType;
+
+  s: boolean;
 begin
   if frmStructuresConfig.cbAutoGuessCustomTypes.checked then
     ctp:=@customtype
@@ -1575,9 +1579,14 @@ begin
 
 
     x:=0;
-    readprocessmemory(processhandle,pointer(baseaddress),@buf[0],bytesize,x);
-    if x=0 then
+    s:=readprocessmemory(processhandle,pointer(baseaddress),@buf[0],bytesize,x);
+
+    if not s then beep;
+
+    if (x=0) or (x>bytesize) then
     begin
+      if x>bytesize then bytesize:=0;
+
       dec(bytesize, baseaddress mod 4096);
       readprocessmemory(processhandle,pointer(baseaddress),@buf[0],bytesize,x);
 
@@ -1599,7 +1608,7 @@ begin
       end;
     end;
 
-    if x>0 then
+    if (x>0) and (x<=bytesize) then
     begin
       currentOffset:=offset;
 
@@ -2214,6 +2223,8 @@ procedure TStructColumn.setNewParent(group: TStructGroup);
 var i: integer;
    oldparent: TStructGroup;
 begin
+  if group=parent then exit;
+
   oldparent:=parent;
   i:=parent.fcolumns.IndexOf(self);
 
@@ -4624,9 +4635,13 @@ var
   size: integer;
   element: TStructElement;
   displayMethod: TDisplayMethod;
+  i: integer;
+  n: TTreenode;
 begin
-  element := getStructElementFromNode(tvStructureView.Selected);
-  if (element = nil) then exit;
+  if tvStructureView.SelectionCount=0 then exit;
+
+ // element := getStructElementFromNode(tvStructureView.Selected);
+ // if (element = nil) then exit;
 
   if (Sender = miChangeTypeByte) or (Sender = miChangeTypeByteHex) then vt := vtByte
   else if (Sender = miChangeType2Byte) or (Sender = miChangeType2ByteHex) then vt := vtWord
@@ -4664,9 +4679,17 @@ begin
      (Sender = miChangeType4Byte) or (Sender = miChangeTypeFloat) or
      (Sender = miChangeTypeDouble) then displayMethod := dtSignedInteger;
 
-  element.setVartype(vt);
-  element.setDisplayMethod(displayMethod);
-  element.setBytesize(size);
+  for i:=0 to tvStructureView.SelectionCount-1 do
+  begin
+    n:=tvStructureView.Selections[i];
+    element := getStructElementFromNode(n);
+    if element<>nil then
+    begin
+      element.setVartype(vt);
+      element.setDisplayMethod(displayMethod);
+      element.setBytesize(size);
+    end;
+  end;
 end;
 
 procedure TfrmStructures2.MenuItem8Click(Sender: TObject);
@@ -4681,7 +4704,7 @@ end;
 
 procedure TfrmStructures2.miViewClick(Sender: TObject);
 begin
-  if (groupcount>=2) and (group[0].columnCount>1) and (group[1].columnCount>1) then
+  if (groupcount>=2) and (group[0].columnCount>=1) and (group[1].columnCount>=1) then
   begin
     miSeperatorCommonalityScanner.visible:=true;
     miCommonalityScan.visible:=true;
@@ -4697,6 +4720,9 @@ var
 begin
   if groupcount>=2 then
   begin
+    if (group[0].columnCount<2) or (group[1].columnCount<2) then
+      messagedlg(rsWarnAboutLessThan2Addresses, mtWarning, [mbok], 0);
+
     if frmStructureCompare<>nil then
       f:=TfrmStructureCompare.Create(application)
     else

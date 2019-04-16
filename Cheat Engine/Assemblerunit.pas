@@ -4,6 +4,8 @@ unit Assemblerunit;
 
 {$MODE Delphi}
 
+
+
 interface
 
 {$ifdef jni}
@@ -130,6 +132,8 @@ type topcode=record
   //paramencoding: TParamEncoding;
 end;
 
+{$warn 3175 off}
+{$warn 3177 off}
 
 const opcodes: array [1..opcodecount] of topcode =(
 {ok}  (mnemonic:'AAA';opcode1:eo_none;opcode2:eo_none;paramtype1:par_noparam;paramtype2:par_noparam;paramtype3:par_noparam;bytes:1;bt1:$37;bt2:0;bt3:0), //no param
@@ -2662,6 +2666,8 @@ const opcodes: array [1..opcodecount] of topcode =(
   (mnemonic:'XTEST';bytes:3;bt1:$0f;bt2:$01;bt3:$d6)
 );
 
+{$warn 3175 on}
+{$warn 3177 on}
 
 
 type
@@ -2678,7 +2684,7 @@ type TAssemblerBytes=array of byte;
 
 type TAssemblerEvent=procedure(address:qword; instruction: string; var bytes: TAssemblerBytes) of object;
 
-type TassemblerPreference=(apNone, apShort, apLong);
+type TassemblerPreference=(apNone, apShort, apLong, apFar);
 
 function Assemble(opcode:string; address: ptrUint;var bytes: TAssemblerBytes; assemblerPreference: TassemblerPreference=apNone; skiprangecheck: boolean=false): boolean;
 function GetOpcodesIndex(opcode: string): integer;
@@ -2751,7 +2757,7 @@ uses symbolhandler, assemblerArm, Parsers, NewKernelHandler;
 
 {$ifdef windows}
 uses {$ifndef autoassemblerdll}CEFuncProc,{$endif}symbolhandler, lua, luahandler,
-  lualib, assemblerArm, Parsers, NewKernelHandler, LuaCaller, math;
+  lualib, assemblerArm, Parsers, NewKernelHandler, LuaCaller, math, cpuidUnit;
 {$endif}
 
 resourcestring
@@ -2765,6 +2771,8 @@ resourcestring
   rsTheAssemblerTriedToSetARegisteValueThatIsTooHigh = 'The assembler tried to set a register value that is too high';
   rsAssemblerError = 'Assembler error';
   rsOffsetTooBig = 'offset too big';
+  rsInvalidValueFor32Bit = 'The value provided can not be encoded in a 32-bit field';
+
 var ExtraAssemblers: array of TAssemblerEvent;
 
 
@@ -2908,17 +2916,29 @@ begin
   end;
 end;
 
-function SignedValueToType(value: integer): integer;
+function SignedValueToType(value: ptrint): integer;
+var
+  vup: dword;
+  msb: integer;
 begin
   result:=8;
 
   if ((value<-128) or (value>127)) then result:=16;
   if ((value<-32768) or (value>32767)) then result:=32;
 
+  vup:=value shr 32;
+  msb:=(value shr 31) and 1;
+
+  if ((msb=1) and (vup<>$ffffffff)) or
+     ((msb=0) and (vup<>$00000000)) then
+     result:=64; //can not be encoded using a 32 bit value
 
 end;
 
 function ValueToType(value: ptruint): integer;
+var
+  msb: integer;
+  vup: dword;
 begin
   result:=32;
   if value<=$ffff then
@@ -2941,6 +2961,17 @@ begin
       if PtrInt(value)>=-32768 then result:=16;
     end;
   end;
+
+  if result=32 then
+  begin
+    //still
+    vup:=value shr 32;
+    msb:=(value shr 31) and 1;
+
+    if ((msb=1) and (vup<>$ffffffff)) or
+       ((msb=0) and (vup<>$00000000)) then
+       result:=64; //can not be encoded using a 32 bit value
+  end;
 end;
 
 function StringValueToType(value: string): integer;
@@ -2952,6 +2983,7 @@ begin
 
   val(value,x,err);
   if err>0 then exit;
+
 
   if length(value)=17 then result:=64 else
   if length(value)=9 then result:=32 else
@@ -2976,6 +3008,7 @@ end;
 function getreg(reg: string;exceptonerror:boolean): integer; overload;
 begin
   result:=-1;
+
   if (reg='RAX') or (reg='EAX') or (reg='AX') or (reg='AL') or (reg='MM0') or (reg='XMM0') or (reg='ST(0)') or (reg='ST') or (reg='ES') or (reg='CR0') or (reg='DR0') then result:=0;
   if (reg='RCX') or (reg='ECX') or (reg='CX') or (reg='CL') or (reg='MM1') or (reg='XMM1') or (reg='ST(1)') or (reg='CS') or (reg='CR1') or (reg='DR1') then result:=1;
   if (reg='RDX') or (reg='EDX') or (reg='DX') or (reg='DL') or (reg='MM2') or (reg='XMM2') or (reg='ST(2)') or (reg='SS') or (reg='CR2') or (reg='DR2') then result:=2;
@@ -3256,6 +3289,7 @@ function gettokentype(var token:string;token2: string): TTokenType;
 var err: integer;
     temp:string;
     i64: int64;
+    brp: integer;
 begin
   result:=ttInvalidtoken;
   if length(token)=0 then exit;
@@ -3281,17 +3315,18 @@ begin
   //temp:=StringReplace(token,'PTR [', '[',[rfIgnoreCase]);
 
 
-  if pos('[',token)>0 then
+  brp:=pos('[',token);
+  if brp>0 then
   begin
-    if (pos('YMMWORD ',token)>0) then result:=ttMemorylocation256 else
-    if (pos('XMMWORD ',token)>0) then result:=ttMemorylocation128 else
-    if (pos('DQWORD ',token)>0) then result:=ttMemorylocation128 else
-    if (pos('TBYTE ',token)>0) then result:=ttMemorylocation80 else
-    if (pos('TWORD ',token)>0) then result:=ttMemorylocation80 else
-    if (pos('QWORD ',token)>0) then result:=ttMemorylocation64 else
-    if (pos('DWORD ',token)>0) then result:=ttMemorylocation32 else
-    if (pos('WORD ',token)>0) then result:=ttMemorylocation16 else
-    if (pos('BYTE ',token)>0) then result:=ttMemorylocation8 else
+    if (pos('YMMWORD',token) in [1..brp]) then result:=ttMemorylocation256 else
+    if (pos('XMMWORD',token) in [1..brp]) then result:=ttMemorylocation128 else
+    if (pos('DQWORD',token) in [1..brp]) then result:=ttMemorylocation128 else
+    if (pos('TBYTE',token) in [1..brp]) then result:=ttMemorylocation80 else
+    if (pos('TWORD',token) in [1..brp]) then result:=ttMemorylocation80 else
+    if (pos('QWORD',token) in [1..brp]) then result:=ttMemorylocation64 else
+    if (pos('DWORD',token) in [1..brp]) then result:=ttMemorylocation32 else
+    if (pos('WORD',token) in [1..brp]) then result:=ttMemorylocation16 else
+    if (pos('BYTE',token) in [1..brp]) then result:=ttMemorylocation8 else
       result:=ttMemorylocation;
   end;
 
@@ -3401,7 +3436,7 @@ begin
     //looks like a pointer in a address specifier (idiot user detected...)
 
 
-    temp:='['+inttohex(symhandler.getaddressfromname(copy(token,2,length(token)-2), false,haserror),8)+']';
+    temp:='['+inttohex(symhandler.getaddressfromname(copy(token,2,length(token)-2), true,haserror),8)+']';
     if not haserror then
       token:=temp
     else
@@ -3433,11 +3468,12 @@ begin
 
     if not inquote then
     begin
-      if token[i] in ['[',']','+','-'] then
+      if token[i] in ['[',']','+','-',' '] then //6.8.4 (added ' ' for FAR, LONG, SHORT)
       begin
         if temp<>'' then
         begin
           setlength(tokens,length(tokens)+1);
+          if token[i]=' ' then temp:=temp+' ';
           tokens[length(tokens)-1]:=temp;
           temp:='';
         end;
@@ -3464,17 +3500,25 @@ begin
     if (length(tokens[i])>=1) and (not (tokens[i][1] in ['[',']','+','-','*'])) then //3/16/2011: 11:15 (replaced or with and)
     begin
       val('$'+tokens[i],j,err);
+
       if (err<>0) and (getreg(tokens[i],false)=-1) then    //not a hexadecimal value and not a register
       begin
-        temp:=inttohex(symhandler.getaddressfromname(tokens[i], false, haserror,nil),8);
+        temp:=inttohex(symhandler.getaddressfromname(tokens[i], true, haserror,nil),8);
         if not haserror then
           tokens[i]:=temp //can be rewritten as a hexadecimal
         else
         begin
+          j:=pos('*', tokens[i]);
+          if j>0 then //getreg failed, but could be it's the 'other' one
+          begin
+            if (length(tokens[i])>j) and (copy(tokens[i],j+1,1)[1] in ['2','4','8']) then
+              continue; //reg*2 / *3, /*4
+          end;
+
           if (i<length(tokens)-1) then
           begin
             //perhaps it can be concatenated with the next one
-            if (length(tokens[i+1])>0) and (not (tokens[i+1][1] in ['''','"','[',']','(',')'])) then //not an invalid token char
+            if (length(tokens[i+1])>0) and (not (tokens[i+1][1] in ['''','"','[',']','(',')',' '])) then //not an invalid token char
             begin
               tokens[i+1]:=tokens[i]+tokens[i+1];
               tokens[i]:='';
@@ -4483,6 +4527,10 @@ var tokens: ttokens;
 
     bigvex: boolean;
     VEXvvvv: integer;
+
+    cannotencodewithrexw: boolean;
+
+    //cpuinfo: TCPUIDResult;
 begin
   VEXvvvv:=$f;
   needsAddressSwitchPrefix:=false;
@@ -4511,96 +4559,150 @@ begin
 
   if nroftokens=0 then exit;
 
-  if tokens[0][1]='A' then  //A* //allign
-  begin
-    if tokens[0]='ALIGN' then
+  case tokens[0][1] of
+    'A':  //A* //allign
     begin
-      if nroftokens>=2 then
+      if tokens[0]='ALIGN' then
       begin
-        i:=HexStrToInt(tokens[1]);
+        if nroftokens>=2 then
+        begin
+          i:=HexStrToInt(tokens[1]);
 
-        if nroftokens>=3 then
-          b:=HexStrToInt(tokens[2])
-        else
-          b:=0;
+          if nroftokens>=3 then
+            b:=HexStrToInt(tokens[2])
+          else
+            b:=0;
 
-        k:=i-(address mod i);
+          k:=i-(address mod i);
 
-        if k=i then exit(true);
+          if k=i then exit(true);
 
-        for i:=0 to k-1 do
-          Add(bytes, b);
+          for i:=0 to k-1 do
+            Add(bytes, b);
+
+          result:=true;
+          exit;
+        end;
+      end;
+    end;
+
+    'D': //D*
+    begin
+      if tokens[0]='DB' then
+      begin
+        for i:=1 to nroftokens-1 do
+        begin
+          if tokens[i][1]='''' then //string
+          begin
+            //find the original non uppercase stringpos in the opcode
+            j:=pos(tokens[i],uppercase(opcode));
+
+            if j>0 then
+            begin
+              tempstring:=copy(opcode,j,length(tokens[i]));
+              addstring(bytes,tempstring);
+            end
+            else addstring(bytes,tokens[i]); //lets try to save face...
+          end
+          else
+          begin    //db 00 00 ?? ?? ?? ?? 00 00
+            if ((length(tokens[i])>=1) and (tokens[i][1] in ['?','*'])) and
+               ((length(tokens[i])<2) or ((length(tokens[i])=2) and (tokens[i][2]=tokens[i][1]))) then
+            begin
+              //wildcard
+              v:=0;
+              ReadProcessMemory(processhandle,pointer(address+i-1), @b, 1, br);
+              add(bytes, b);
+            end
+            else
+              add(bytes,[HexStrToInt(tokens[i])]);
+          end;
+        end;
+
+        result:=true;
+        exit;
+      end;
+
+      if tokens[0]='DW' then
+      begin
+        for i:=1 to nroftokens-1 do
+          addword(bytes,HexStrToInt(tokens[i]));
+
+        result:=true;
+        exit;
+      end;
+
+      if tokens[0]='DD' then
+      begin
+        for i:=1 to nroftokens-1 do
+          adddword(bytes,HexStrToInt(tokens[i]));
+
+        result:=true;
+        exit;
+      end;
+
+      if tokens[0]='DQ' then
+      begin
+        for i:=1 to nroftokens-1 do
+          addqword(bytes,HexStrToInt64(tokens[i]));
 
         result:=true;
         exit;
       end;
     end;
-  end;
 
-  if tokens[0][1]='D' then  //D*
-  begin
-    if tokens[0]='DB' then
+    'N': //N*
     begin
-      for i:=1 to nroftokens-1 do
+      if (length(tokens)=2) and ((tokens[0]='NOP') and (length(tokens[1])>=1) and (tokens[1][1] in ['a'..'f','A'..'F','0'..'9'])) then //NOP HEXVALUE
       begin
-        if tokens[i][1]='''' then //string
-        begin
-          //find the original non uppercase stringpos in the opcode
-          j:=pos(tokens[i],uppercase(opcode));
+        try
+          j:=HexStrToInt(tokens[1]);
+         // cpuinfo:=CPUID(1);
+          if isintel and (((CPUID(1).eax shr 8) and $f) in [$6,$f]) or isamd then
+          begin
+            while j>0 do
+            begin
+              k:=j;
+              if k>9 then k:=9;
 
-          if j>0 then
-          begin
-            tempstring:=copy(opcode,j,length(tokens[i]));
-            addstring(bytes,tempstring);
-          end
-          else addstring(bytes,tokens[i]); //lets try to save face...
-        end
-        else
-        begin    //db 00 00 ?? ?? ?? ?? 00 00
-          if ((length(tokens[i])>=1) and (tokens[i][1] in ['?','*'])) and
-             ((length(tokens[i])<2) or ((length(tokens[i])=2) and (tokens[i][2]=tokens[i][1]))) then
-          begin
-            //wildcard
-            v:=0;
-            ReadProcessMemory(processhandle,pointer(address+i-1), @b, 1, br);
-            add(bytes, b);
+              case k of
+                1: Add(bytes,[$90]);
+                2: Add(bytes,[$66,$90]);
+                3: Add(bytes,[$0f,$1f,$00]);
+                4: Add(bytes,[$0f,$1f,$40,$00]);
+                5: Add(bytes,[$0f,$1f,$44,$00,$00]);
+                6: Add(bytes,[$66,$0f,$1f,$44,$00,$00]);
+                7: Add(bytes,[$0f,$1f,$80,$00,$00,$00,$00]);
+                8: Add(bytes,[$0f,$1f,$84,$00,$00,$00,$00,$00]);
+                9: Add(bytes,[$66,$0f,$1f,$84,$00,$00,$00,$00,$00]);
+              end;
+
+              dec(j,k);
+            end;
           end
           else
-            add(bytes,[HexStrToInt(tokens[i])]);
+          begin
+            while j>0 do
+            begin
+              add(bytes,[$90]);
+              dec(j);
+            end;
+          end;
+
+          exit(true);
+        except
+          //could be nop EAX or whatever....
         end;
+        //build a list of NOP's
+
+        //check if this cpu supports multibyte nops, else 0x90 times j
+
+
       end;
 
-      result:=true;
-      exit;
-    end;
-
-    if tokens[0]='DW' then
-    begin
-      for i:=1 to nroftokens-1 do
-        addword(bytes,HexStrToInt(tokens[i]));
-
-      result:=true;
-      exit;
-    end;
-
-    if tokens[0]='DD' then
-    begin
-      for i:=1 to nroftokens-1 do
-        adddword(bytes,HexStrToInt(tokens[i]));
-
-      result:=true;
-      exit;
-    end;
-
-    if tokens[0]='DQ' then
-    begin
-      for i:=1 to nroftokens-1 do
-        addqword(bytes,HexStrToInt64(tokens[i]));
-
-      result:=true;
-      exit;
     end;
   end;
+
 
   for i:=0 to length(ExtraAssemblers)-1 do
   begin
@@ -4656,20 +4758,24 @@ begin
   if (nroftokens-1)>=mnemonic+3 then parameter3:=tokens[mnemonic+3] else parameter3:='';
   if (nroftokens-1)>=mnemonic+4 then parameter4:=tokens[mnemonic+4] else parameter4:='';
 
-  overrideShort:=Pos('SHORT ',parameter1)>0;
-  overrideLong:=(Pos('LONG ',parameter1)>0);
+  tempstring:=uppercase(parameter1);
+
+
+  overrideShort:=Pos('SHORT ',tempstring)>0;
+  overrideLong:=Pos('LONG ',tempstring)>0;
   if processhandler.is64Bit then
-    overrideFar:=(Pos('FAR ',parameter1)>0)
+    overrideFar:=(Pos('FAR ',tempstring)>0)
   else
-    overrideLong:=overrideLong or (Pos('FAR ',parameter1)>0);
+    overrideLong:=overrideLong or (Pos('FAR ',tempstring)>0);
 
 
-  if not (overrideShort or overrideLong) and (assemblerPreference<>apNone) then //no override chooce by the user and not a normal preference
+  if not (overrideShort or overrideLong or overridefar) and (assemblerPreference<>apNone) then //no override choice by the user and not a normal preference
   begin
-    if assemblerPreference=apLong then
-      overrideLong:=true
-    else if assemblerPreference=apShort then
-      overrideShort:=true;
+    case assemblerPreference of
+      apFar: overrideFar:=true;
+      apLong: overrideLong:=true;
+      apShort: overrideShort:=true;
+    end;
   end;
 
 
@@ -4885,8 +4991,8 @@ begin
     vtype:=StringValueToType(parameter4);
   end;
 
-  signedvtype:=SignedValueToType(integer(v));
-  signedv2type:=SignedValueToType(integer(v2));
+  signedvtype:=SignedValueToType(v);
+  signedv2type:=SignedValueToType(v2);
 
 
   result:=false;
@@ -5049,7 +5155,7 @@ begin
 
 
 
-          if (vtype=32) or (signedvtype>8) then
+          if (vtype=32) or (signedvtype>8)  then
           begin
             //see if there is also a 'opcode imm32' variant
             k:=startoflist;
@@ -5057,6 +5163,8 @@ begin
             begin
               if (opcodes[k].paramtype1=par_imm32) then
               begin
+                if (signedvtype=64) and rex_w then raise exception.create(rsInvalidValueFor32Bit);
+
                 addopcode(bytes,k);
                 adddword(bytes,v);
                 result:=true;
@@ -5091,6 +5199,8 @@ begin
             begin
               if (opcodes[k].paramtype1=par_imm32) then
               begin
+                if (signedvtype=64) and rex_w then raise exception.create(rsInvalidValueFor32Bit);
+
                 addopcode(bytes,k);
                 adddword(bytes,v);
                 result:=true;
@@ -5127,6 +5237,8 @@ begin
         if (opcodes[j].paramtype2=par_noparam) and (parameter2='') then
         begin
           //imm32
+          if (signedvtype=64) and rex_w then raise exception.create(rsInvalidValueFor32Bit);
+
           addopcode(bytes,j);
           addDword(bytes,v);
           result:=true;
@@ -5428,6 +5540,8 @@ begin
 
             if (opcodes[j].opcode1=eo_id) and (opcodes[j].opcode2=eo_none) then
             begin
+              if (signedvtype=64) and rex_w then raise exception.create(rsInvalidValueFor32Bit);
+
               addopcode(bytes,j);
               adddword(bytes,v);
               result:=true;
@@ -6036,6 +6150,8 @@ begin
                      (opcodes[k].paramtype2=par_rm32) and
                      (opcodes[k].paramtype3=par_imm32) then
                   begin
+                    if (signedvtype=64) and rex_w then raise exception.create(rsInvalidValueFor32Bit);
+
                     addopcode(bytes,k);
                     result:=createmodrm(bytes,getreg(parameter1),parameter2);
                     adddword(bytes,v);
@@ -6112,6 +6228,8 @@ begin
                   inc(k);
                 end;
               end;
+
+              if (signedvtype=64) and rex_w then raise exception.create(rsInvalidValueFor32Bit);
 
               addopcode(bytes,j);
               createmodrm(bytes,getreg(parameter1),parameter1);
@@ -6418,6 +6536,8 @@ begin
                 if ((opcodes[k].paramtype1=par_rm32) and (opcodes[k].paramtype2=par_imm32)) and ((opcodes[k].paramtype3=par_noparam) and (parameter3='')) then
                 begin
                   //yes, there is
+                  if (signedvtype=64) and rex_w then raise exception.create(rsInvalidValueFor32Bit);
+
                   addopcode(bytes,k);
                   createmodrm(bytes,eoToReg(opcodes[k].opcode1),parameter1);
                   adddword(bytes,v);
@@ -6463,6 +6583,8 @@ begin
               end;
             end;
             //no there's none
+            if (signedvtype=64) and rex_w then raise exception.create(rsInvalidValueFor32Bit);
+
             addopcode(bytes,j);
             createmodrm(bytes,eoToReg(opcodes[j].opcode1),parameter1);
             adddword(bytes,dword(v));
@@ -7693,6 +7815,8 @@ begin
             pdword(@bytes[relativeAddressLocation])^:=actualdisplacement-(address+length(bytes));
 
         end;
+
+
 
 
 

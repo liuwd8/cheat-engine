@@ -145,7 +145,6 @@ object frmLuaEngine: TfrmLuaEngine
         Font.Height = -13
         Font.Name = 'Courier New'
         Font.Pitch = fpFixed
-        Font.Quality = fqNonAntialiased
         ParentColor = False
         ParentFont = False
         ParentShowHint = False
@@ -1218,7 +1217,7 @@ object frmLuaEngine: TfrmLuaEngine
     OnCodeCompletion = scLuaCompleterCodeCompletion
     ExecCommandID = ecSynCompletionExecute
     Editor = mScript
-    left = 408
+    left = 416
     top = 184
   end
 end

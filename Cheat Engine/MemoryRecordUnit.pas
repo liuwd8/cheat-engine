@@ -62,6 +62,8 @@ type TMemRecAutoAssemblerData=record
       allocs: TCEAllocArray;
       exceptionlist: TCEExceptionListArray;
       registeredsymbols: TStringlist;
+      lastExecutionFailed: boolean;
+      lastExecutionFailedReason: string;
     end;
 
 type TMemRecExtraData=record
@@ -196,6 +198,8 @@ type
     fOnGetDisplayValue: TGetDisplayValueEvent;
 
     fpointeroffsets: array of TMemrecOffset; //if longer than 0, this is a pointer
+
+
     function getPointerOffset(index: integer): TMemrecOffset;
 
     function getByteSize: integer;
@@ -263,6 +267,8 @@ type
     isSelected: boolean; //lazarus bypass. Because lazarus does not implement multiselect I have to keep track of which entries are selected
 
     //showAsHex: boolean;
+
+    fScriptHotKey: TMemoryRecordHotkey; //set when a hotkey is used to toggle a script
 
     function getuniquehotkeyid: integer;
 
@@ -375,6 +381,10 @@ type
     property Async: Boolean read fAsync write fAsync;
     property AsyncProcessing: Boolean read isProcessing;
     property AsyncProcessingTime: qword read getProcessingTime;
+    property ScriptHotKey: TMemoryRecordHotkey read fScriptHotKey;
+
+    property LastAAExecutionFailed: boolean read AutoAssemblerData.lastExecutionFailed;
+    property LastAAExecutionFailedReason: string read AutoAssemblerData.lastExecutionFailedReason;
   end;
 
   THKSoundFlag=(hksPlaySound=0, hksSpeakText=1, hksSpeakTextEnglish=2); //playSound excludes speakText
@@ -451,11 +461,22 @@ begin
       owner.fActive:=state;
       if owner.autoassemblerdata.registeredsymbols.Count>0 then //if it has a registered symbol then reinterpret all addresses
         TAddresslist(owner.fOwner).ReinterpretAddresses;
+
+      owner.autoassemblerdata.lastExecutionFailed:=false;
+    end
+    else
+    begin
+      owner.autoassemblerdata.lastExecutionFailed:=true;
+      owner.autoassemblerdata.lastExecutionFailedReason:='Unknown';
     end;
   except
     //running the script failed, state unchanged
     on e:exception do
+    begin
+      owner.autoassemblerdata.lastExecutionFailed:=true;
+      owner.autoassemblerdata.lastExecutionFailedReason:=e.message;
       OutputDebugString(e.message);
+    end;
   end;
 
   Queue(owner.processingDone);
@@ -578,7 +599,10 @@ end;
 
 procedure TMemrecOffset.setOffset(o: integer);
 begin
-  offsettext:=inttohex(o,1);
+  if o<0 then
+    offsettext:='-'+inttohex(-o,1)
+  else
+    offsettext:=inttohex(o,1);
 end;
 
 procedure TMemrecOffset.setOffsetText(s: string);
@@ -682,7 +706,13 @@ begin
 
   //remove this hotkey from the memoryrecord
   if owner<>nil then
+  begin
     owner.hotkeylist.Remove(self);
+    if owner.fScriptHotKey=self then
+      owner.fScriptHotKey:=nil;
+  end;
+
+  inherited destroy;
 end;
 
 procedure TMemoryRecordHotkey.doHotkey;
@@ -2126,12 +2156,18 @@ begin
       case hk.action of
         mrhToggleActivation:
         begin
+          if (VarType=vtAutoAssembler)  then
+            fScriptHotKey:=hk;
+
           active:=not active;
 
-          if active then
-            hk.playActivateSound
-          else
-            hk.playDeactivateSound;
+          if (VarType<>vtAutoAssembler)  then
+          begin
+            if active then
+              hk.playActivateSound
+            else
+              hk.playDeactivateSound;
+          end;
         end;
 
         mrhSetValue:
@@ -2156,38 +2192,56 @@ begin
 
         mrhToggleActivationAllowDecrease:
         begin
+          if (VarType=vtAutoAssembler) then
+            fScriptHotKey:=hk;
+
           allowDecrease:=True;
           active:=not active;
 
-          if active then
-            hk.playActivateSound
-          else
-            hk.playDeactivateSound; //also gives a signal when failing to activate
+          if (VarType<>vtAutoAssembler)  then
+          begin
+            if active then
+              hk.playActivateSound
+            else
+              hk.playDeactivateSound; //also gives a signal when failing to activate
+          end;
         end;
 
         mrhToggleActivationAllowIncrease:
         begin
+          if (VarType=vtAutoAssembler) then
+            fScriptHotKey:=hk;
+
           allowIncrease:=True;
           active:=not active;
 
-          if active then
-            hk.playActivateSound
-          else
-            hk.playDeactivateSound; //also gives a signal when failing to activate
+          if (VarType<>vtAutoAssembler)  then
+          begin
+            if active then
+              hk.playActivateSound
+            else
+              hk.playDeactivateSound; //also gives a signal when failing to activate
+          end;
 
         end;
 
         mrhActivate:
         begin
+          if (VarType=vtAutoAssembler) then
+            fScriptHotKey:=hk;
+
           active:=true;
-          if active then
+          if (VarType<>vtAutoAssembler) and active then
             hk.playActivateSound;
         end;
 
         mrhDeactivate:
         begin
+          if (VarType=vtAutoAssembler) then
+            fScriptHotKey:=hk;
+
           active:=false;
-          if not active then
+          if (VarType<>vtAutoAssembler) and (not active) then
             hk.playDeactivateSound;  //also gives a signal when failing to activate
         end;
 
@@ -2264,12 +2318,7 @@ begin
       TMemoryRecord(treenode[i].data).setActive(true);
   end;
 
-  if (not active) and (moDeactivateChildrenAsWell in options) then
-  begin
-    //apply this state to all the children
-    for i:=0 to treenode.Count-1 do
-      TMemoryRecord(treenode[i].data).setActive(false);
-  end;
+
   {$ENDIF}
 
   //6.5+
@@ -2282,11 +2331,24 @@ begin
   if not wantedstate and assigned(fondeactivate) then fondeactivate(self, false, factive); //deactivated , after
 
   SetVisibleChildrenState;
+
+  if fScriptHotKey<>nil then
+  begin
+    //play sounds if needed
+    if active then
+      fScriptHotKey.playActivateSound
+    else
+      fScriptHotKey.playDeactivateSound;
+
+    fScriptHotKey:=nil;
+  end;
 end;
 
 procedure TMemoryRecord.setActive(state: boolean);
 var f: string;
     i: integer;
+
+    p: boolean;
 begin
   if state=fActive then exit; //no need to execute this is it's the same state
   if processingThread<>nil then exit; //don't change the state while processing
@@ -2321,6 +2383,35 @@ begin
 
   wantedstate:=state;
 
+  if (state=false) and (moDeactivateChildrenAsWell in options) then
+  begin
+    //apply this state to all the children
+    for i:=0 to treenode.Count-1 do
+      TMemoryRecord(treenode[i].data).setActive(false);
+
+    if async then
+      processingTimeStart:=gettickcount64;
+
+    //and wait for them to finish
+    for i:=0 to treenode.count-1 do
+    begin
+      while TMemoryRecord(treenode[i].data).isProcessing do
+      begin
+        if async then
+        begin
+          processingThread:=TMemoryRecordProcessingThread(1); //fake it
+          application.ProcessMessages;
+        end;
+        CheckSynchronize(100);
+
+//        TMemoryRecord(treenode[i].data).treenode.Update;
+        Taddresslist(fOwner).Repaint;
+      end;
+    end;
+
+    processingThread:=nil;
+  end;
+
   if not fisGroupHeader then
   begin
     if self.VarType = vtAutoAssembler then
@@ -2348,10 +2439,22 @@ begin
           begin
             fActive:=state;
             if autoassemblerdata.registeredsymbols.Count>0 then //if it has a registered symbol then reinterpret all addresses
-              TAddresslist(fOwner).ReinterpretAddresses;
+             TAddresslist(fOwner).ReinterpretAddresses;
+
+            autoassemblerdata.lastExecutionFailed:=false;
+          end
+          else
+          begin
+            autoassemblerdata.lastExecutionFailed:=true;
+            autoassemblerdata.lastExecutionFailedReason:='Unknown';
           end;
         except
           //running the script failed, state unchanged
+          on e:exception do
+          begin
+            autoassemblerdata.lastExecutionFailed:=true;
+            autoassemblerdata.lastExecutionFailedReason:=e.message;
+          end;
         end;
       end;
       {$ENDIF}

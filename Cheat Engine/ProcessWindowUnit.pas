@@ -31,6 +31,10 @@ type
     FontDialog1: TFontDialog;
     MainMenu1: TMainMenu;
     MenuItem1: TMenuItem;
+    MenuItem2: TMenuItem;
+    MenuItem3: TMenuItem;
+    miConvertPIDToDecimal: TMenuItem;
+    miRefresh: TMenuItem;
     miCreateProcess: TMenuItem;
     miOpenFile: TMenuItem;
     N2: TMenuItem;
@@ -63,6 +67,7 @@ type
     procedure miProcessListLongClick(Sender: TObject);
     procedure miChangeFontClick(Sender: TObject);
     procedure miOwnProcessesOnlyClick(Sender: TObject);
+    procedure miRefreshClick(Sender: TObject);
     procedure OKButtonClick(Sender: TObject);
     procedure btnProcesslistClick(Sender: TObject);
     procedure btnWindowListClick(Sender: TObject);
@@ -372,6 +377,11 @@ begin
   refreshlist;
 end;
 
+procedure TProcessWindow.miRefreshClick(Sender: TObject);
+begin
+  refreshList;
+end;
+
 procedure TProcessWindow.btnNetworkClick(Sender: TObject);
 begin
   if frmNetworkConfig=nil then
@@ -571,7 +581,7 @@ begin
     begin
       DBKFileAsMemory(opendialog2.filename, frmOpenFileAsProcessDialog.startaddress);
       processselected:=true;
-      ProcessHandler.ProcessHandle:=QWORD(-1);
+      ProcessHandler.ProcessHandle:=QWORD(-2);
       MainForm.ProcessLabel.caption:=extractfilename(opendialog2.FileName);
       MainForm.miSaveFile.visible:=true;
       ProcessHandler.processid:=$FFFFFFFF;
@@ -658,12 +668,19 @@ end;
 
 procedure TProcessWindow.PopupMenu1Popup(Sender: TObject);
 begin
-
+  miShowInvisibleItems.visible:=tabheader.TabIndex=2;
 end;
 
 procedure TProcessWindow.ProcessListDrawItem(Control: TWinControl;
   Index: Integer; Rect: TRect; State: TOwnerDrawState);
-var i: integer;
+var
+  i: integer;
+  t: string;
+
+  sep: integer;
+
+  pids: string;
+  pid: dword;
 begin
   wantedheight:=ProcessList.canvas.TextHeight('QqJjWwSs')+3;
   {i:=ProcessList.canvas.TextHeight('QqJjWwSs')+3;
@@ -675,8 +692,23 @@ begin
   if processlist.itemheight<i then ProcessList.ItemHeight:=i;}
 
 
+  t:=processlist.Items[index];
+  if miConvertPIDToDecimal.checked then
+  begin
+    sep:=pos('-',t);
+    if sep<>0 then
+    begin
+      try
+        pids:=copy(t,1,sep-1);
+        pid:=strtoint('$'+pids);
+        t:=format('%.8d',[pid])+copy(t,sep);
+      except
+      end;
+    end;
+  end;
 
-  processlist.Canvas.TextOut(rect.Left+rect.Bottom-rect.Top+3,rect.Top,processlist.Items[index]);
+
+  processlist.Canvas.TextOut(rect.Left+rect.Bottom-rect.Top+3,rect.Top,t);
 
   if (processlist.Items.Objects[index]<>nil) and (PProcessListInfo(processlist.Items.Objects[index])^.processIcon>0) then
     DrawIconEx(processlist.Canvas.Handle, rect.left, rect.Top, PProcessListInfo(processlist.Items.Objects[index])^.processIcon, rect.Bottom-rect.Top,rect.Bottom-rect.Top,0,0,DI_NORMAL);
@@ -702,8 +734,11 @@ begin
     if autosize then
     begin
       autosize:=false;
-      if height<350 then
-        height:=350; //initial show
+      //first run or no saving positions
+      clientwidth:=max(clientwidth, canvas.TextWidth('  XXXXXXXX - XXXXXXXXXXXXXXXXXXXXXX  '));
+      height:=mainform.Height-(mainform.height div 3);
+      position:=poDesigned;
+      position:=poMainFormCenter;
     end;
     errortrace:=106;
 

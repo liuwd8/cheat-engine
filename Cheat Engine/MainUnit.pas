@@ -260,6 +260,7 @@ type
     MenuItem12: TMenuItem;
     MenuItem14: TMenuItem;
     MenuItem15: TMenuItem;
+    miAutoAssembleErrorMessage: TMenuItem;
     miLuaDocumentation: TMenuItem;
     miForgotScan: TMenuItem;
     miDotNET: TMenuItem;
@@ -492,6 +493,7 @@ type
     procedure actOpenDissectStructureExecute(Sender: TObject);
     procedure actOpenLuaEngineExecute(Sender: TObject);
     procedure Address1Click(Sender: TObject);
+    procedure cbPercentageOnChange(Sender: TObject);
     procedure cbCodePageChange(Sender: TObject);
     procedure cbUnicodeChange(Sender: TObject);
     procedure EnableLCLClick(Sender: TObject);
@@ -508,8 +510,10 @@ type
     procedure CreateGroupClick(Sender: TObject);
     procedure Foundlist3SelectItem(Sender: TObject; Item: TListItem;
       Selected: boolean);
+    procedure Label3Click(Sender: TObject);
     procedure MenuItem12Click(Sender: TObject);
     procedure MenuItem15Click(Sender: TObject);
+    procedure miAutoAssembleErrorMessageClick(Sender: TObject);
     procedure miHelpClick(Sender: TObject);
     procedure miLuaDocumentationClick(Sender: TObject);
     procedure miForgotScanClick(Sender: TObject);
@@ -681,6 +685,8 @@ type
   private
     onetimeonly: boolean; //to protect against make mainform visible (.show)
 
+    scantimestart, scantimefinish: int64;
+
     tabcounter: integer;
     //variable that only goes up, doesn't go down when a tab is deleted
     scantablist: TTablist;
@@ -734,7 +740,11 @@ type
     fOnProcessOpened: TProcessOpenedEvent;
 
     overlayid: integer;   //debug
-    lastAddedAddress: string;
+    lastAdded: record
+      Address: string;
+      vartype: TVariableType;
+    end;
+
 
     saveGotCanceled: boolean; //set to true if the last save button click was canceled
 
@@ -900,7 +910,7 @@ type
     procedure CreateScanValue2;
     procedure DestroyScanValue2;
 
-    procedure cbPercentageOnChange(Sender: TObject);
+
     procedure CreateCbPercentage;
     procedure DestroyCbPercentage;
 
@@ -960,7 +970,7 @@ uses mainunit2, ProcessWindowUnit, MemoryBrowserFormUnit, TypePopup, HotKeys,
   frmNetworkDataCompressionUnit, ProcessHandlerUnit, ProcessList, pointeraddresslist,
   PointerscanresultReader, Parsers, Globals, GnuAssembler, xinput, DPIHelper,
   multilineinputqueryunit, winsapi, LuaClass, Filehandler, feces,
-  frmDBVMWatchConfigUnit, frmDotNetObjectListUnit, ceregistry;
+  frmDBVMWatchConfigUnit, frmDotNetObjectListUnit, ceregistry, UnexpectedExceptionsHelper;
 
 resourcestring
   rsInvalidStartAddress = 'Invalid start address: %s';
@@ -1431,7 +1441,7 @@ begin
 
       //3..7=set speedhack speed
       4:
-      begin         //todo;active while key down   (launch timer that checks keycombo)
+      begin
         if cbspeedhack.Enabled then
         begin
           try
@@ -1806,7 +1816,8 @@ begin
 
       31: //debug->run
       begin
-        MemoryBrowser.Run1.Click;
+        if memorybrowser.miDebugRun.enabled then
+          MemoryBrowser.miDebugRun.Click;
       end;
 
     end;
@@ -3113,6 +3124,12 @@ begin
 
 end;
 
+procedure TMainForm.Label3Click(Sender: TObject);
+var x:TChangeRegOnBPInfo;
+begin
+ // x.changeRIP
+end;
+
 procedure TMainForm.MenuItem12Click(Sender: TObject);
 begin
   shellexecute(0, 'open', pchar(cheatenginedir+'Tutorial-x86_64.exe'), nil, nil, sw_show);
@@ -3146,6 +3163,11 @@ begin
       exit;
     end;
   end;
+end;
+
+procedure TMainForm.miAutoAssembleErrorMessageClick(Sender: TObject);
+begin
+  addresslist.doValueChange;
 end;
 
 procedure TMainForm.miHelpClick(Sender: TObject);
@@ -3779,11 +3801,13 @@ procedure TMainForm.miChangeColorClick(Sender: TObject);
 var
   i: integer;
 begin
-  if (addresslist.SelCount > 0) and (colordialog1.Execute) then
+  if (addresslist.SelCount > 0) then
   begin
-    for i := 0 to addresslist.Count - 1 do
-      if addresslist[i].isSelected then
-        addresslist[i].color := colordialog1.Color;
+    colordialog1.Color:=addresslist.selectedRecord.Color;
+    if (colordialog1.Execute) then
+      for i := 0 to addresslist.Count - 1 do
+        if addresslist[i].isSelected then
+          addresslist[i].color := colordialog1.Color;
   end;
 end;
 
@@ -4968,6 +4992,8 @@ begin
     cbPauseWhileScanning.Checked:=true;
 
   foundlist3.Column[2].Caption:=rsPrevious;
+
+  cbpercentage.checked:=false;
 end;
 
 procedure TMainForm.btnNewScanClick(Sender: TObject);
@@ -5055,6 +5081,8 @@ begin
   i:=FromAddress.Font.Size;
   FromAddress.Font.Size:=font.size;
   if i=0 then beep;  }
+
+  lastAdded.vartype:=vtDword;
 
   miSignTable.visible:=canSignTables;
 
@@ -5442,6 +5470,15 @@ begin
   lua_setglobal(luavm,'AddressList');
 
   miEnableLCLDebug.checked:=cereg.readBool('Debug');
+  allocsAddToUnexpectedExceptionList:=cereg.readBool('Add Allocated Memory As Watched');
+  case cereg.readInteger('Unexpected Breakpoint Behaviour',0) of
+    0: UnexpectedExceptionAction:=ueaIgnore;
+    1: UnexpectedExceptionAction:=ueaBreak;
+    2: UnexpectedExceptionAction:=ueaBreakIfInRegion;
+  end;
+
+
+
 end;
 
 procedure TMainForm.ChangedHandle(Sender: TObject);
@@ -5735,9 +5772,12 @@ end;
 procedure TMainForm.btnAddAddressManuallyClick(Sender: TObject);
 var mr: Tmemoryrecord;
 begin
-  mr:=addresslist.addAddressManually(lastAddedAddress);
+  mr:=addresslist.addAddressManually(lastAdded.Address, lastAdded.vartype);
   if mr<>nil then
-    lastAddedAddress:=mr.interpretableaddress; //store the last used string
+  begin
+    lastAdded.Address:=mr.interpretableaddress; //store the last used string
+    lastAdded.vartype:=mr.VarType;
+  end;
 end;
 
 procedure TMainForm.ScanTypeChange(Sender: TObject);
@@ -6342,6 +6382,7 @@ begin
 
 
 
+
   cbunicode.Visible := unicodevis;
   cbCodePage.visible:= unicodevis;
 
@@ -6378,6 +6419,14 @@ begin
 
   if ScanType.itemindex=-1 then
     ScanType.itemindex:=0; //just in case something has set it to -1
+
+  if pnlScanValueOptions.visible then
+  begin
+    if foundlist3.width>pnlScanValueOptions.left then
+      foundlist3.width:=foundlist3.width-(foundlist3.width-pnlScanValueOptions.left)-2;
+  end;
+
+
 end;
 
 procedure TMainForm.LogoClick(Sender: TObject);
@@ -6471,20 +6520,14 @@ end;
 
 
 procedure TMainForm.PopupMenu2Popup(Sender: TObject);
-const
-  IA32_VMX_BASIC_MSR=$480;
-  IA32_VMX_TRUE_PROCBASED_CTLS_MSR=$48e;
-  IA32_VMX_PROCBASED_CTLS_MSR=$482;
-  IA32_VMX_PROCBASED_CTLS2_MSR=$48b;
+
 var
   i: integer;
 
   //6.0
   selectionCount: integer;
   selectedrecord: TMemoryRecord;
-  canuseEPT: boolean;
 
-  procbased1flags: DWORD;
 begin
   sethotkey1.Caption := rsSetChangeHotkeys;
 
@@ -6612,36 +6655,16 @@ begin
 
   miSetDropdownOptions.visible:=addresslist.selcount > 0;
 
+  miDBVMFindWhatWritesOrAccesses.visible:=isIntel and isDBVMCapable; //02/24/2019: Most cpu's support EPT now
+  sep2.Visible:=miDBVMFindWhatWritesOrAccesses.Visible;
 
-  canuseEPT:=false;
-  if isIntel and isDBVMCapable then
+
+  if (selectedrecord<>nil) and (selectedrecord.VarType=vtAutoAssembler) then
   begin
-    if isDriverLoaded(nil) then
-    begin
-      //check if it can use EPT tables in dbvm:
-      //first get the basic msr to see if TRUE procbasedctrls need to be used or old
-      if (readMSR(IA32_VMX_BASIC_MSR) and (1 shl 55))<>0 then
-        procbased1flags:=readMSR(IA32_VMX_TRUE_PROCBASED_CTLS_MSR) shr 32
-      else
-        procbased1flags:=readMSR(IA32_VMX_PROCBASED_CTLS_MSR) shr 32;
-
-      //check if it has secondary procbased flags
-      if (procbased1flags and (1 shl 31))<>0 then
-      begin
-        //yes, check if EPT can be set to 1
-        if ((readMSR(IA32_VMX_PROCBASED_CTLS2_MSR) shr 32) and (1 shl 1))<>0 then
-        begin
-          canuseEPT:=true;
-        end;
-      end;
-
-
-
-    end;
+    miAutoAssembleErrorMessage.visible:=selectedrecord.LastAAExecutionFailed;
+    if selectedrecord.LastAAExecutionFailed then
+      miAutoAssembleErrorMessage.Caption:='<<'+selectedrecord.LastAAExecutionFailedReason+'>>';
   end;
-
-  sep2.Visible:=Findoutwhataccessesthisaddress1.Visible and canuseEPT;
-  miDBVMFindWhatWritesOrAccesses.visible:=Findoutwhataccessesthisaddress1.Visible and canuseEPT;
 end;
 
 procedure TMainForm.foundlistpopupPopup(Sender: TObject);
@@ -6994,6 +7017,7 @@ begin
 end;
 
 procedure TMainForm.miDBVMFindWhatWritesOrAccessesClick(Sender: TObject);
+
 var
   address: ptrUint;
   res: word;
@@ -7001,74 +7025,95 @@ var
 
   fcd: TFoundCodeDialog;
   unlockaddress: qword;
+  canuseept: boolean;
+
 begin
+  LoadDBK32;
 
-
-  if addresslist.selectedRecord <> nil then
+  canuseept:=hasEPTSupport;
+  if (isintel=false) or (isDBVMCapable=false) then
   begin
-    if not loaddbvmifneeded then exit;
+    messagedlg('This function requires an Intel CPU with virtualization support. If your system has that then make sure that you''re currently not running inside a virtual machine. (Windows has some security features that can run programs inside a VM)', mtError,[mbok],0);
+    exit;
+  end;
 
-    address := addresslist.selectedRecord.GetRealAddress;
+  if canuseept=false then
+  begin
+    messagedlg('This function requires that your CPU supports ''Extended Page Table (EPT)'' which your CPU lacks',mtError,[mbok],0);
+    exit;
+  end;
 
-    if addresslist.selectedRecord.IsPointer then
+  if loaddbvmifneeded('DBVM find routines needs DBVM for EPT page hooking. Loading DBVM can potentially cause a system freeze. Are you sure?') then
+  begin
+
+    if addresslist.selectedRecord <> nil then
     begin
-      with TformPointerOrPointee.Create(self) do
-      begin
-        button1.Caption := rsFindOutWhatAccessesThisPointer;
-        btnFirst.Caption := rsFindWhatAccessesTheAddressPointedAtByThisPointer;
+      if not loaddbvmifneeded then exit;
 
-        res := showmodal;
-        if res = mrNo then //find what writes to the address pointer at by this pointer
-          address := addresslist.selectedRecord.GetRealAddress
-        else
-        if res = mrYes then
-          address := symhandler.getAddressFromName(
-            addresslist.selectedRecord.interpretableaddress)
-        else
-          exit;
+      address := addresslist.selectedRecord.GetRealAddress;
+
+      if addresslist.selectedRecord.IsPointer then
+      begin
+        with TformPointerOrPointee.Create(self) do
+        begin
+          btnFindWhatWritesPointer.Caption := rsFindOutWhatAccessesThisPointer;
+          btnFindWhatWritesPointee.Caption := rsFindWhatAccessesTheAddressPointedAtByThisPointer;
+
+          res := showmodal;
+          if res = mrNo then //find what writes to the address pointer at by this pointer
+            address := addresslist.selectedRecord.GetRealAddress
+          else
+          if res = mrYes then
+            address := symhandler.getAddressFromName(
+              addresslist.selectedRecord.interpretableaddress)
+          else
+            exit;
+        end;
       end;
-    end;
 
-    //spawn a DBVM watch config screen where the user can select options like lock memory
-    if frmDBVMWatchConfig=nil then
-      frmDBVMWatchConfig:=TfrmDBVMWatchConfig.create(self);
+      //spawn a DBVM watch config screen where the user can select options like lock memory
+      if frmDBVMWatchConfig=nil then
+        frmDBVMWatchConfig:=TfrmDBVMWatchConfig.create(self);
 
-    frmDBVMWatchConfig.address:=address;
-    if frmDBVMWatchConfig.showmodal=mrok then
-    begin
-      if frmDBVMWatchConfig.LockPage then
-        unlockaddress:=LockMemory(processid, address and QWORD($fffffffffffff000),4096)
-      else
-        unlockaddress:=0;
-
-
-      if frmDBVMWatchConfig.watchtype=0 then
-        id:=dbvm_watch_writes(frmDBVMWatchConfig.PhysicalAddress, addresslist.selectedRecord.bytesize, frmDBVMWatchConfig.Options, frmDBVMWatchConfig.MaxEntries)
-      else
-        id:=dbvm_watch_reads(frmDBVMWatchConfig.PhysicalAddress, addresslist.selectedRecord.bytesize, frmDBVMWatchConfig.Options, frmDBVMWatchConfig.MaxEntries);
-
-      if (id<>-1) then
+      frmDBVMWatchConfig.address:=address;
+      if frmDBVMWatchConfig.showmodal=mrok then
       begin
-        //spawn a foundcodedialog
-        fcd:=TFoundCodeDialog.Create(self);
-        fcd.multipleRip:=frmDBVMWatchConfig.cbMultipleRIP.Checked;
-        fcd.dbvmwatchid:=id;
-        fcd.dbvmwatch_unlock:=unlockaddress;
-        if frmDBVMWatchConfig.watchtype=0 then
-          fcd.caption:=Format(rsTheFollowingOpcodesAccessed, [inttohex(address, 8)])
+        if frmDBVMWatchConfig.LockPage then
+          unlockaddress:=LockMemory(processid, address and QWORD($fffffffffffff000),4096)
         else
-          fcd.caption:=Format(rsTheFollowingOpcodesWriteTo, [inttohex(address, 8)]);
+          unlockaddress:=0;
+
+        case frmDBVMWatchConfig.watchtype of
+          0: id:=dbvm_watch_writes(frmDBVMWatchConfig.PhysicalAddress, addresslist.selectedRecord.bytesize, frmDBVMWatchConfig.Options, frmDBVMWatchConfig.MaxEntries);
+          1: id:=dbvm_watch_reads(frmDBVMWatchConfig.PhysicalAddress, addresslist.selectedRecord.bytesize, frmDBVMWatchConfig.Options, frmDBVMWatchConfig.MaxEntries);
+          2: id:=dbvm_watch_executes(frmDBVMWatchConfig.PhysicalAddress, addresslist.selectedRecord.bytesize, frmDBVMWatchConfig.Options, frmDBVMWatchConfig.MaxEntries);
+          else
+            id:=-1;
+        end;
+
+        if (id<>-1) then
+        begin
+          //spawn a foundcodedialog
+          fcd:=TFoundCodeDialog.Create(self);
+          fcd.multipleRip:=frmDBVMWatchConfig.cbMultipleRIP.Checked;
+          fcd.dbvmwatchid:=id;
+          fcd.dbvmwatch_unlock:=unlockaddress;
+          if frmDBVMWatchConfig.watchtype=0 then
+            fcd.caption:=Format(rsTheFollowingOpcodesAccessed, [inttohex(address, 8)])
+          else
+            fcd.caption:=Format(rsTheFollowingOpcodesWriteTo, [inttohex(address, 8)]);
 
 
-        fcd.show;
-      end
-      else
-        MessageDlg('dbvm_watch failed', mtError, [mbok],0);
+          fcd.show;
+        end
+        else
+          MessageDlg('dbvm_watch failed', mtError, [mbok],0);
+
+      end;
+      freeandnil(frmDBVMWatchConfig);
+
 
     end;
-    freeandnil(frmDBVMWatchConfig);
-
-
   end;
 
 
@@ -7089,8 +7134,8 @@ begin
     begin
       with TformPointerOrPointee.Create(self) do
       begin
-        button1.Caption := rsFindOutWhatAccessesThisPointer;
-        btnFirst.Caption := rsFindWhatAccessesTheAddressPointedAtByThisPointer;
+        btnFindWhatWritesPointer.Caption := rsFindOutWhatAccessesThisPointer;
+        btnFindWhatWritesPointee.Caption := rsFindWhatAccessesTheAddressPointedAtByThisPointer;
 
         res := showmodal;
         if res = mrNo then //find what writes to the address pointer at by this pointer
@@ -7127,8 +7172,8 @@ begin
     begin
       with TformPointerOrPointee.Create(self) do
       begin
-        button1.Caption := rsFindOutWhatWritesThisPointer;
-        btnFirst.Caption := rsFindWhatWritesTheAddressPointedAtByThisPointer;
+        btnFindWhatWritesPointer.Caption := rsFindOutWhatWritesThisPointer;
+        btnFindWhatWritesPointee.Caption := rsFindWhatWritesTheAddressPointedAtByThisPointer;
 
         res := showmodal;
         if res = mrNo then //find what writes to the address pointer at by this pointer
@@ -7726,6 +7771,7 @@ begin
     MessageDlg(Format(rsInvalidScanFolder, [memscan.GetScanFolder]), mtError, [mbOk], 0);
 
  // ImageList2.GetBitmap(0);
+
 end;
 
 
@@ -9072,6 +9118,8 @@ var
   percentage: boolean;
   fastscanmethod: TFastscanmethod;
 begin
+  QueryPerformanceCounter(scantimestart);
+
   if PreviousResults<>nil then
     freeandnil(PreviousResults);
 
@@ -9171,7 +9219,18 @@ var
   previous: string;
 
   c: qword;
+
+  scantime: qword;
 begin
+  QueryPerformanceCounter(scantimefinish);
+  scantime:=scantimefinish-scantimestart;
+
+{$ifdef SCANPERF}
+  if ssCtrl in GetKeyShiftState then
+    showmessage(inttostr(scantime));
+{$endif}
+
+
   if ScanTabList <> nil then
     ScanTabList.Enabled := True;
 

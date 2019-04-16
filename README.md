@@ -3,7 +3,7 @@ Cheat Engine. A development environment focused on modding games and application
 
 
 For the latest version:
-[![Recent CE Download](./molumen-download-button-1-800px.png)](https://github.com/cheat-engine/cheat-engine/releases/download/v6.8.1/CheatEngine681.exe)
+[![Recent CE Download](./molumen-download-button-1-800px.png)](https://github.com/cheat-engine/cheat-engine/releases/download/6.8.3/CheatEngine683.exe)
 
 For older versions, check out https://github.com/cheat-engine/cheat-engine/releases
 
@@ -19,7 +19,7 @@ You can also follow cheat engine on twitter: https://twitter.com/_cheatengine
 
 ## Build Instructions
 
-Download and install Lazarus **version 1.6.4** from [here](https://sourceforge.net/projects/lazarus/files/Lazarus%20Windows%2064%20bits/)
+Download and install Lazarus **version 2.0.0** from [here](https://sourceforge.net/projects/lazarus/files/Lazarus%20Windows%2064%20bits/)
 
 Run Lazarus and click on `Project->Open Project`.  Select
 `cheatengine.lpi` from the `Cheat Engine` folder as the project.

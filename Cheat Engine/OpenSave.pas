@@ -15,10 +15,10 @@ uses windows, forms, LCLIntf,registry, SysUtils,AdvancedOptionsUnit,CommentsUnit
      zstream, luafile, disassemblerComments, commonTypeDefs, lazutf8;
 
 
-var CurrentTableVersion: dword=27;
+var CurrentTableVersion: dword=28;
 procedure protecttrainer(filename: string);
 procedure unprotecttrainer(filename: string; stream: TStream);
-procedure SaveTable(Filename: string; protect: boolean=false);
+procedure SaveTable(Filename: string; protect: boolean=false; dontDeactivateDesignerForms: boolean=false);
 procedure LoadTable(Filename: string;merge: boolean);
 procedure SaveCEM(Filename:string;address:ptrUint; size:dword);
 procedure LoadXML(doc: TXMLDocument; merge: boolean; isTrainer: boolean=false);
@@ -287,6 +287,7 @@ var
     tempaddress: ptrUint;
     tempdescription,tempmodulename: string;
     tempoffset: dword;
+    tempsymbolname: string;
 
     symbolname: string;
     li: tlistitem;
@@ -437,6 +438,12 @@ begin
           else
             tempdescription:='...';
 
+          tempnode:=CodeEntry.FindNode('AddressString');
+          if tempnode<>nil then
+            tempsymbolname:=tempnode.TextContent
+          else
+            tempsymbolname:='';
+
           tempaddress:=0;
           tempnode:=CodeEntry.FindNode('Address');
           if tempnode<>nil then
@@ -525,16 +532,18 @@ begin
             for j:=0 to length(tempafter)-1 do
               code[numberofcodes-1].after[j]:=tempafter[j];
 
-            code[numberofcodes-1].Address:=tempaddress;
-            code[numberofcodes-1].modulename:=tempmodulename;
-            code[numberofcodes-1].offset:=tempoffset;
+            if tempsymbolname<>'' then
+              code[numberofcodes-1].symbolname:=tempsymbolname
+            else
+            begin
+              if tempmodulename='' then
+                code[numberofcodes-1].symbolname:=inttohex(tempaddress,8)
+              else
+                code[numberofcodes-1].symbolname:=tempmodulename+'+'+inttohex(tempoffset,1);
+            end;
 
             li:=codelist2.Items.Add;
-            if code[numberofcodes-1].modulename<>'' then
-              li.Caption:=code[numberofcodes-1].modulename+'+'+inttohex(code[numberofcodes-1].offset,1)
-            else
-              li.Caption:=inttohex(tempaddress,8);
-
+            li.Caption:=code[numberofcodes-1].symbolname;
             li.SubItems.Add(tempdescription);
           end;
 
@@ -1128,7 +1137,7 @@ begin
 
 end;   }
 
-procedure SaveXML(Filename: string);
+procedure SaveXML(Filename: string; dontDeactivateDesignerForms: boolean=false);
 var doc: TXMLDocument;
     CheatTable: TDOMElement;
     Files, Forms,Entries,Symbols, Structures, Comment,luascript, dcomments: TDOMNode;
@@ -1151,7 +1160,7 @@ begin
     Forms:=CheatTable.AppendChild(doc.CreateElement('Forms'));
     for i:=0 to mainform.LuaForms.count-1 do
       if TCEForm(mainform.LuaForms[i]).DoNotSaveInTable=false then //only save forms that belong to the table
-        TCEForm(mainform.LuaForms[i]).savetoxml(forms);
+        TCEForm(mainform.LuaForms[i]).savetoxml(forms, dontDeactivateDesignerForms);
   end;
 
   if mainform.LuaFiles.count>0 then
@@ -1174,9 +1183,7 @@ begin
     begin
       CodeRecord:=CodeRecords.AppendChild(doc.CreateElement('CodeEntry'));
       CodeRecord.AppendChild(doc.CreateElement('Description')).TextContent:=advancedoptions.codelist2.Items[i].SubItems[0];
-      CodeRecord.AppendChild(doc.CreateElement('Address')).TextContent:=inttohex(advancedoptions.code[i].address,8);
-      CodeRecord.AppendChild(doc.CreateElement('ModuleName')).TextContent:=advancedoptions.code[i].modulename;
-      CodeRecord.AppendChild(doc.CreateElement('ModuleNameOffset')).TextContent:=inttohex(advancedoptions.code[i].offset,1);
+      CodeRecord.AppendChild(doc.CreateElement('AddressString')).TextContent:=advancedoptions.code[i].symbolname;
 
       //before
       CodeBytes:=CodeRecord.AppendChild(doc.CreateElement('Before'));
@@ -1264,7 +1271,7 @@ begin
 
 end;
 
-procedure SaveTable(Filename: string; protect: boolean=false);
+procedure SaveTable(Filename: string; protect: boolean=false; dontDeactivateDesignerForms: boolean=false);
 begin
   try
     if Uppercase(utf8tosys(extractfileext(filename)))<>'.EXE' then
@@ -1276,7 +1283,7 @@ begin
           then exit;
 
 
-      SaveXML(utf8tosys(filename));
+      SaveXML(utf8tosys(filename), dontDeactivateDesignerForms);
       if protect then
         protecttrainer(utf8tosys(filename));
     end

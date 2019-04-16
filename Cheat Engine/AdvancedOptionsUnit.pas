@@ -19,8 +19,7 @@ type
   { TAdvancedOptions }
 
   TAdvancedOptions = class(TForm)
-    Button2: TButton;
-    Button3: TButton;
+    miDBVMFindWhatCodeAccesses: TMenuItem;
     PopupMenu2: TPopupMenu;
     miReplaceWithNops: TMenuItem;
     miRestoreWithOriginal: TMenuItem;
@@ -38,7 +37,6 @@ type
     Button1: TButton;
     Panel2: TPanel;
     Pausebutton: TSpeedButton;
-    SaveButton: TSpeedButton;
     Label1: TLabel;
     N3: TMenuItem;
     Codelist2: TListView;
@@ -47,6 +45,7 @@ type
     procedure FormDestroy(Sender: TObject);
     procedure FormResize(Sender: TObject);
     procedure FormShow(Sender: TObject);
+    procedure miDBVMFindWhatCodeAccessesClick(Sender: TObject);
     procedure PopupMenu2Popup(Sender: TObject);
     procedure miRestoreWithOriginalClick(Sender: TObject);
     procedure miReplaceWithNopsClick(Sender: TObject);
@@ -88,9 +87,10 @@ type
             actualopcode: array of byte;
             after: array of byte;
             changed:boolean;
-            modulename: string;
-            offset: dword;
-            Address: ptrUint; //in case module offsets dont work
+//            modulename: string;
+//            offset: dword;
+            symbolname: string;
+//            Address: ptrUint; //in case module offsets dont work
           end;
 
     function AddToCodeList(address: ptrUint; sizeofopcode: integer;changed: boolean; multiadd: boolean=false):boolean;
@@ -184,8 +184,13 @@ begin
     //if (code[i].Address=address) then raise exception.create(strAddressAlreadyInTheList);
 
     //I want to see if address to address+sizeofopcode-1 is overlapping with addresses[i] to length(actualopcode[i])-1
-    starta:=code[i].Address;
-    stopa:=code[i].Address+length(code[i].actualopcode)-1;
+    try
+      starta:=symhandler.getAddressFromName(code[i].symbolname);
+    except
+      continue;
+    end;
+
+    stopa:=starta+length(code[i].actualopcode)-1;
 
     startb:=address;
     stopb:=address+sizeofopcode-1;
@@ -261,39 +266,14 @@ begin
   for i:=0 to bread-1 do AdvancedOptions.code[numberofcodes-1].after[i]:=backupbytes[i];
 
   code[numberofcodes-1].changed:=changed;
-  code[numberofcodes-1].Address:=address;
-  code[numberofcodes-1].modulename:='';
-  code[numberofcodes-1].offset:=0;
 
-  //get the module this code is in
-  ths:=CreateToolhelp32Snapshot(TH32CS_SNAPMODULE or TH32CS_SNAPMODULE32,processid);
-  me32.dwSize:=sizeof(MODULEENTRY32);
-  if ths<>0 then
-  begin
-    try
-      if module32first(ths,me32) then
-      repeat
-        if (address>=ptrUint(me32.modBaseAddr)) and (address<ptrUint(me32.modBaseAddr)+me32.modBaseSize) then
-        begin
-          x:=me32.szExePath;
-          code[numberofcodes-1].modulename:=extractfilename(x);
-          code[numberofcodes-1].offset:=address-ptrUint(me32.modBaseAddr);
-          break;
-        end;
-      until not module32next(ths,me32);
-    finally
-      closehandle(ths);
-    end;
-  end;
-
-  li:=self.Codelist2.Items.Add;
-
-  if code[numberofcodes-1].modulename<>'' then
-  begin
-    li.Caption:='"'+code[numberofcodes-1].modulename+'"+'+inttohex(code[numberofcodes-1].offset,1)
-  end
+  if ssctrl in GetKeyShiftState then
+    code[numberofcodes-1].symbolname:=symhandler.getNameFromAddress(address,true,true)
   else
-    li.Caption:=inttohex(address,8);
+    code[numberofcodes-1].symbolname:=symhandler.getNameFromAddress(address,false,true);
+
+  li:=codelist2.Items.Add;
+  li.Caption:=code[numberofcodes-1].symbolname;
 
   li.SubItems.Add(newstring);
 
@@ -326,6 +306,14 @@ begin
 
 end;
 
+procedure TAdvancedOptions.miDBVMFindWhatCodeAccessesClick(Sender: TObject);
+begin
+  try
+    MemoryBrowser.DBVMFindWhatThisCodeAccesses(symhandler.getAddressFromName(code[codelist2.ItemIndex].symbolname));
+  except
+  end;
+end;
+
 resourcestring
   strFindWhatCodeaccesses='Find out what addresses this code accesses';
   strFindWhatCodeReads='Find out what addresses this code reads from';
@@ -356,12 +344,6 @@ begin
     Replaceall1.enabled:=true;
     Openthedisassemblerhere1.enabled:=true;
 
-    if code[codelist2.itemindex].modulename<>'' then
-    begin
-      symhandler.getmodulebyname(code[codelist2.itemindex].modulename,mi);
-      code[codelist2.itemindex].Address:=mi.baseaddress+code[codelist2.itemindex].offset;
-    end;
-
     if code[codelist2.itemindex].changed then
     begin
       miReplaceWithNops.enabled:=false;
@@ -374,8 +356,14 @@ begin
 
       //disassemble this address, and see if it a writer or reader
       //if neither grey it out
-      offset:=code[codelist2.itemindex].Address;
-      opcode:=disassemble(offset,desc);
+
+      try
+        offset:=symhandler.getAddressFromName(code[codelist2.itemindex].symbolname, false);
+        opcode:=disassemble(offset,desc);
+      except
+        Findoutwhatthiscodechanges1.enabled:=false;
+        exit;
+      end;
 
       Findoutwhatthiscodechanges1.Caption:=strFindWhatCodeAccesses;
       Findoutwhatthiscodechanges1.enabled:=false;
@@ -406,17 +394,22 @@ begin
       end;
 
 
+
+
+
       Findoutwhatthiscodechanges1.enabled:=true;
     end;
   end;
 
+  miDBVMFindWhatCodeAccesses.Enabled:=isIntel and isDBVMCapable and Findoutwhatthiscodechanges1.enabled;
+  miDBVMFindWhatCodeAccesses.Caption:='DBVM '+Findoutwhatthiscodechanges1.Caption;
 end;
 
 resourcestring strcouldntrestorecode='Error when trying to restore this code!';
                strnotthesame='The memory at this address isn''t what it should be! Continue?';
 procedure TAdvancedOptions.miRestoreWithOriginalClick(Sender: TObject);
 var i,j: integer;
-    a: ptrUint;
+    a,address: ptrUint;
     lengthactualopcode: dword;
     written: PtrUInt;
     original: dword;
@@ -430,8 +423,14 @@ var i,j: integer;
 begin
   for i:=0 to codelist2.items.Count-1 do
   begin
-
     if not codelist2.Items[i].Selected then continue;
+
+    try
+      address:=symhandler.getAddressFromName(code[i].symbolname);
+    except
+      continue;
+    end;
+
 
     lengthactualopcode:=length(code[i].actualopcode);
     //read the current list, if it isnt a NOP or the actualopcode give a warning
@@ -440,7 +439,9 @@ begin
     for j:=0 to lengthactualopcode-1 do
       temp[j]:=$90;
 
-    readprocessmemory(processhandle,pointer(code[i].Address),@temp2[0],lengthactualopcode,br);
+    readprocessmemory(processhandle,pointer(Address),@temp2[0],lengthactualopcode,br);
+
+
     if br<>lengthactualopcode then
       raise exception.Create(strNotReadable);
 
@@ -465,22 +466,22 @@ begin
 
 
     //set to read and write
-    vpe:=(SkipVirtualProtectEx=false) and VirtualProtectEx(processhandle,pointer(code[i].Address),length(code[i].actualopcode),PAGE_EXECUTE_READWRITE,original);  //I want to execute this, read it and write it. (so, full access)
+    vpe:=(SkipVirtualProtectEx=false) and VirtualProtectEx(processhandle,pointer(Address),length(code[i].actualopcode),PAGE_EXECUTE_READWRITE,original);  //I want to execute this, read it and write it. (so, full access)
 
     //write
-    writeprocessmemory(processhandle,pointer(code[i].Address),@code[i].actualopcode[0],length(code[i].actualopcode),written);
+    writeprocessmemory(processhandle,pointer(Address),@code[i].actualopcode[0],length(code[i].actualopcode),written);
     if written<>lengthactualopcode then
     begin
       messagedlg(strCouldntrestorecode,mtWarning,[MBok],0);
       if vpe then
-        VirtualProtectEx(processhandle,pointer(code[i].Address),lengthactualopcode,original,x);
+        VirtualProtectEx(processhandle,pointer(Address),lengthactualopcode,original,x);
       exit;
     end;
 
     //set back
-    if vpe then VirtualProtectEx(processhandle,pointer(code[i].Address),lengthactualopcode,original,x);
+    if vpe then VirtualProtectEx(processhandle,pointer(Address),lengthactualopcode,original,x);
 
-    FlushInstructionCache(processhandle,pointer(code[i].Address),lengthactualopcode);
+    FlushInstructionCache(processhandle,pointer(Address),lengthactualopcode);
 
     code[i].changed:=false;
   end;
@@ -517,7 +518,12 @@ begin
   begin
     if not codelist2.items[index].Selected then continue;
 
-    a:=code[index].Address;
+    try
+      a:=symhandler.getAddressFromName(code[index].symbolname);
+    except
+      continue;
+    end;
+
     codelength:=length(code[index].actualopcode);
 
     //read the opcode currently at the address
@@ -586,10 +592,8 @@ begin
         code[i].before:=code[i+1].before;
         code[i].actualopcode:=code[i+1].actualopcode;
         code[i].after:=code[i+1].after;
-        code[i].Address:=code[i+1].Address;
+        code[i].symbolname:=code[i+1].symbolname;
         code[i].changed:=code[i+1].changed;
-        code[i].modulename:=code[i+1].modulename;
-        code[i].offset:=code[i+1].offset;
       end;
 
       dec(numberofcodes);
@@ -608,8 +612,10 @@ procedure TAdvancedOptions.Findoutwhatthiscodechanges1Click(
   Sender: TObject);
 begin
 
-  MemoryBrowser.FindWhatThisCodeAccesses(code[codelist2.ItemIndex].Address);
-
+  try
+    MemoryBrowser.FindWhatThisCodeAccesses(symhandler.getAddressFromName(code[codelist2.ItemIndex].symbolname));
+  except
+  end;
 end;
 
 procedure TAdvancedOptions.Rename1Click(Sender: TObject);
@@ -632,8 +638,7 @@ end;
 
 procedure TAdvancedOptions.SaveButtonClick(Sender: TObject);
 begin
- (* StandAlone.filename:=SaveDialog1.filename;
-  standAlone.showmodal; *)
+
 end;
 
 procedure TAdvancedOptions.PausebuttonClick(Sender: TObject);
@@ -739,14 +744,11 @@ begin
     index:=j;
     if code[index].changed then continue;
 
-    if code[index].modulename<>'' then //update modulebase
-    begin
-      symhandler.getmodulebyname(code[index].modulename,mi);
-      code[index].Address:=mi.baseaddress+code[index].offset;
+    try
+      a:=symhandler.getAddressFromName(code[index].symbolname);
+    except
+      continue;
     end;
-
-
-    a:=code[index].Address;
     codelength:=length(code[index].actualopcode);
 
     //read the opcode currently at the address
@@ -824,7 +826,6 @@ begin
   {$endif}
   {$endif}
 
-  savebutton.Visible:=false;
  // pausebutton.Left:=savebutton.Left;
 
   setlength(x,0);
@@ -847,17 +848,15 @@ begin
 
   if codelist2.itemindex<>-1 then
   begin
-    if code[codelist2.itemindex].modulename<>'' then
-    begin
-      symhandler.getmodulebyname(code[codelist2.itemindex].modulename,mi);
-      code[codelist2.itemindex].Address:=mi.baseaddress+code[codelist2.itemindex].offset;
+    try
+      memorybrowser.disassemblerview.SelectedAddress:=symhandler.getAddressFromName(code[codelist2.itemindex].symbolname);
+
+      if memorybrowser.Height<(memorybrowser.Panel1.Height+100) then memorybrowser.height:=memorybrowser.Panel1.Height+100;
+      memorybrowser.panel1.visible:=true;
+      memorybrowser.show;
+
+    except
     end;
-
-    memorybrowser.disassemblerview.SelectedAddress:=code[codelist2.itemindex].Address;
-
-    if memorybrowser.Height<(memorybrowser.Panel1.Height+100) then memorybrowser.height:=memorybrowser.Panel1.Height+100;
-    memorybrowser.panel1.visible:=true;
-    memorybrowser.show;
   end;
 
 end;

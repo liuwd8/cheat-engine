@@ -30,8 +30,17 @@ ceshare: continue with it
 pseudocode: continue with it
 mac version: work on it
 
-
-make more frequent releases ffs
-
-
 define from debug data: Use a ownerdata list instead (or better, a whole new interface where you can see beforehand the layout)
+
+structure compare: Closed a previous structure compare followed by reopening a new one and loading a file, messes up the popupmode and other stuff
+pointerscan: generating pointermap should also check terminated
+pointerscan: when suspending a scan, CE closed itself(crash)
+
+test and fix the d3dhook stuff and trainer generator.  (perhaps dx12 support as well)
+
+add  access rights for the windows app user to pipes
+
+formdesigner: copy from outside a panel and paste into the panel will paste in the old location
+a timer causing a lua_error will eventually show c stack overflow
+
+dbvm: add maps and use them for cloaked regions

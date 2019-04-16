@@ -15,7 +15,7 @@ object ProcessWindow: TProcessWindow
   OnDestroy = FormDestroy
   OnShow = FormShow
   Position = poMainFormCenter
-  LCLVersion = '1.6.4.0'
+  LCLVersion = '2.0.0.4'
   object Panel1: TPanel
     Left = 0
     Height = 112
@@ -182,6 +182,11 @@ object ProcessWindow: TProcessWindow
       ShortCut = 16454
       OnClick = Filter1Click
     end
+    object miRefresh: TMenuItem
+      Caption = 'Refresh'
+      ShortCut = 116
+      OnClick = miRefreshClick
+    end
     object miShowInvisibleItems: TMenuItem
       AutoCheck = True
       Caption = 'Show invisible windows'
@@ -197,6 +202,11 @@ object ProcessWindow: TProcessWindow
       AutoCheck = True
       Caption = 'Only show non-system processes'
       OnClick = miOwnProcessesOnlyClick
+    end
+    object miConvertPIDToDecimal: TMenuItem
+      AutoCheck = True
+      Caption = 'Convert PID to decimal'
+      OnClick = miRefreshClick
     end
     object N1: TMenuItem
       Caption = '-'
