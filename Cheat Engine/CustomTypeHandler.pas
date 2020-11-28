@@ -7,28 +7,31 @@ This class is used as a wrapper for different kinds of custom types
 
 interface
 
-{$ifdef windows}
-uses
-  dialogs, Classes, SysUtils,cefuncproc, autoassembler, lua, lauxlib, lualib,
-  math, commonTypeDefs;
-{$endif}
 
-{$ifdef unix} //not yet implemented, but the interface is available
+
+
+
+{$ifdef jni} //not yet implemented, but the interface is available
 uses
   Classes, SysUtils, math;
 
 type PLua_state=pointer;
+{$else}
+uses
+  dialogs, Classes, SysUtils,cefuncproc, lua, lauxlib, lualib,
+  math, commonTypeDefs;
 {$endif}
 
-type TConversionRoutine=function(data: pointer):integer; stdcall;
-type TReverseConversionRoutine=procedure(i: integer; output: pointer); stdcall;
+type
+  TConversionRoutine=function(data: pointer):integer; stdcall;
+  TReverseConversionRoutine=procedure(i: integer; output: pointer); stdcall;
 
 //I should have used cdecl from the start
-type TConversionRoutine2=function(data: pointer; address: ptruint):integer; cdecl;
-type TReverseConversionRoutine2=procedure(i: integer; address: ptruint; output: pointer); cdecl;
+  TConversionRoutine2=function(data: pointer; address: ptruint):integer; cdecl;
+  TReverseConversionRoutine2=procedure(i: integer; address: ptruint; output: pointer); cdecl;
 
+  TCustomTypeException=class(Exception);
 
-type
   TCustomTypeType=(cttAutoAssembler, cttLuaScript, cttPlugin);
   TCustomType=class
   private
@@ -45,7 +48,7 @@ type
     reverseroutine: pointer;
 
 
-    {$ifndef unix}
+    {$ifndef jni}
     c: TCEAllocArray;
     ce: TCEExceptionListArray;
     {$endif}
@@ -110,8 +113,8 @@ var customTypes: TList; //list holding all the custom types
 
 implementation
 
-{$ifdef windows}
-uses mainunit, LuaHandler, LuaClass;
+{$ifndef jni}
+uses mainunit, LuaHandler, LuaClass,autoassembler;
 {$endif}
 
 resourcestring
@@ -153,7 +156,7 @@ begin
     if uppercase(TCustomType(customtypes[i]).name)=uppercase(n) then
     begin
       if TCustomType(customtypes[i])<>self then
-        raise exception.create(Format(rsACustomTypeWithNameAlreadyExists, [n]));
+        raise TCustomTypeException.create(Format(rsACustomTypeWithNameAlreadyExists, [n]));
     end;
 
   fname:=n;
@@ -167,7 +170,7 @@ begin
     if uppercase(TCustomType(customtypes[i]).functiontypename)=uppercase(n) then
     begin
       if TCustomType(customtypes[i])<>self then
-        raise exception.create(Format(rsACustomFunctionTypeWithNameAlreadyExists, [n]));
+        raise TCustomTypeException.create(Format(rsACustomFunctionTypeWithNameAlreadyExists, [n]));
     end;
 
   ffunctiontypename:=n;
@@ -190,7 +193,7 @@ var
   r: integer;
   c,b: integer;
 begin
-{$ifndef unix}
+{$ifndef jni}
   l:=LuaVM;
 
   if lua_valuetobytesfunctionid=-1 then
@@ -252,7 +255,7 @@ var
   L: PLua_State;
   i: integer;
 begin
-  {$IFNDEF UNIX}
+  {$IFNDEF jni}
   l:=LuaVM;
 
 
@@ -330,7 +333,7 @@ var
   r: integer;
   c,b: integer;
 begin
-  {$IFNDEF UNIX}
+  {$IFNDEF jni}
   l:=LuaVM;
 
     if lua_valuetobytesfunctionid=-1 then
@@ -393,7 +396,7 @@ var
   L: PLua_State;
   i: integer;
 begin
-  {$IFNDEF UNIX}
+  {$IFNDEF jni}
   l:=LuaVM;
 
 
@@ -472,7 +475,7 @@ end;
 
 procedure TCustomType.unloadscript;
 begin
-  {$IFNDEF UNIX}
+  {$IFNDEF jni}
   if fCustomTypeType=cttAutoAssembler then
   begin
     routine:=nil;
@@ -510,12 +513,12 @@ var i: integer;
   newreverseroutine, oldreverseroutine: pointer;
   newbytesize, oldbytesize: integer;
 
-{$IFNDEF UNIX}
+{$IFNDEF jni}
   oldallocarray: TCEAllocArray;
 {$ENDIF}
 begin
 
-  {$IFNDEF UNIX}
+  {$IFNDEF jni}
   oldname:=fname;
   oldfunctiontypename:=ffunctiontypename;
   oldroutine:=routine;
@@ -611,7 +614,7 @@ begin
         begin
           returncount:=lua_gettop(luavm);
           if returncount<>3 then
-            raise exception.create(rsOnlyReturnTypenameBytecountAndFunctiontypename);
+            raise TCustomTypeException.create(rsOnlyReturnTypenameBytecountAndFunctiontypename);
 
           //-1=functiontypename
           //-2=bytecount
@@ -620,9 +623,9 @@ begin
           bytesize:=lua_tointeger(luavm,-2);
           tn:=lua.lua_tostring(luavm,-3);
 
-          if bytesize=0 then raise exception.create(rsBytesizeIs0);
-          if ftn=nil then raise exception.create(rsInvalidFunctiontypename);
-          if tn=nil then raise exception.create(rsInvalidTypename);
+          if bytesize=0 then raise TCustomTypeException.create(rsBytesizeIs0);
+          if ftn=nil then raise TCustomTypeException.create(rsInvalidFunctiontypename);
+          if tn=nil then raise TCustomTypeException.create(rsInvalidTypename);
 
           name:=tn;
           functiontypename:=ftn;
@@ -634,8 +637,8 @@ begin
           if lua_gettop(luavm)>0 then
           begin
             error:=lua.lua_tostring(luavm,-1);
-            raise exception.create(error);
-          end else raise exception.create(rsUndefinedError);
+            raise TCustomTypeException.create(error);
+          end else raise TCustomTypeException.create(rsUndefinedError);
         end;
 
       finally
@@ -678,7 +681,7 @@ begin
       for i:=0 to length(oldallocarray)-1 do
         c[i]:=oldallocarray[i];
 
-      raise exception.create(e.Message); //and now raise the error
+      raise TCustomTypeException.create(e.Message); //and now raise the error
     end;
   end;
   {$ENDIF}
@@ -729,13 +732,15 @@ begin
   MaxCustomTypeSize:=0;
   for i:=0 to customTypes.count-1 do
     MaxCustomTypeSize:=max(MaxCustomTypeSize, TCustomType(customTypes[i]).bytesize);
+
+  mainform.RefreshCustomTypes;
 end;
 
 procedure TCustomType.showDebugInfo;
 var x,y: pointer;
 begin
 
-  {$IFNDEF UNIX}
+  {$IFNDEF jni}
   x:=@routine;
   y:=@reverseroutine;
   ShowMessage(format('routine=%p reverseroutine=%p',[x, y]));
@@ -745,6 +750,10 @@ end;
 destructor TCustomType.destroy;
 begin
   remove;
+
+  //call destroy watchers
+
+  inherited destroy;
 end;
 
 //lua
@@ -762,7 +771,7 @@ var
 
   ct: TCustomType;
 begin
-  {$IFNDEF UNIX}
+  {$IFNDEF jni}
   result:=0;
   parameters:=lua_gettop(L);
   if parameters>=4 then
@@ -855,7 +864,7 @@ var
   s: TStringList;
   i: integer;
 begin
-  {$IFNDEF UNIX}
+  {$IFNDEF jni}
   result:=0;
   bytecount:=1;
   parameters:=lua_gettop(L);
@@ -878,7 +887,17 @@ begin
 
   lua_pop(L, parameters);
 
-  ct:=TCustomType.CreateTypeFromAutoAssemblerScript(script);
+  try
+    ct:=TCustomType.CreateTypeFromAutoAssemblerScript(script);
+  except
+    on e: exception do
+    begin
+      lua_pushnil(L);
+      lua_pushstring(L,e.message);
+      exit(2);
+    end;
+  end;
+
   if parameters=3 then //old version support
   begin
     ct.name:=typename;

@@ -6,7 +6,12 @@ unit PointerscannerSettingsFrm;
 interface
 
 uses
-  windows, LCLIntf, Messages, SysUtils, Classes, Graphics, Controls, Forms,
+  {$ifdef darwin}
+  macport,
+  {$else}
+  windows,
+  {$endif}
+  LCLIntf, LMessages, Messages, SysUtils, Classes, Graphics, Controls, Forms,
   Dialogs, StdCtrls, ComCtrls, ExtCtrls, LResources, EditBtn, Buttons, Contnrs,
   CEFuncProc, NewKernelHandler, symbolhandler, multilineinputqueryunit,
   registry, resolve, math, PointerscanSettingsIPConnectionList, types, commonTypeDefs;
@@ -243,8 +248,8 @@ var frmpointerscannersettings: tfrmpointerscannersettings;
 
 implementation
 
-uses MainUnit, frmMemoryAllocHandlerUnit, MemoryBrowserFormUnit, ProcessHandlerUnit,
-  Globals, parsers, DPIHelper;
+uses MainUnit, {$ifdef windows}frmMemoryAllocHandlerUnit,{$endif} MemoryBrowserFormUnit, ProcessHandlerUnit,
+  Globals, parsers{$ifdef windows}, DPIHelper{$endif};
 
 
 
@@ -301,7 +306,9 @@ begin
 
   combobox.DropDownCount:=max(16, combobox.Items.Count);
 
+  {$ifdef windows}
   SendMessage(combobox.Handle, CB_SETDROPPEDWIDTH, maxwidth+10, 0);
+  {$endif}
 end;
 
 
@@ -364,7 +371,7 @@ begin
   cbAddress.parent:=self;
   cbAddress.AnchorSideRight.Control:=btnDelete;
   cbAddress.AnchorSideRight.side:=asrLeft;
-  cbAddress.Constraints.MinWidth:=TPointerFileList(aowner).canvas.TextWidth('DDDDDDDDDDDD');
+  cbAddress.Constraints.MinWidth:=TPointerFileList(aowner).canvas.TextWidth(' DDDDDDDDDDDDDDDD ');
   //cbAddress.clientwidth:=tcustomform(aowner).canvas.TextWidth('DDDDDDDDDDDD');
   cbAddress.anchors:=[aktop, akright];
   cbAddress.BorderSpacing.Right:=8;
@@ -412,9 +419,10 @@ begin
 
 
 
-
+  {$ifdef windows}
   DPIHelper.AdjustSpeedButtonSize(btnSetFile);
   DPIHelper.AdjustSpeedButtonSize(btnDelete);
+  {$endif}
 
 
 end;
@@ -1075,24 +1083,27 @@ begin
   if cbCompareToOtherPointermaps.checked then
   begin
     pdatafilelist:=TPointerFileList.create(il, self, cbShowAdvancedOptions.left-cbCompareToOtherPointermaps.left-8);
+    pdatafilelist.Color:=clWindow;
+    pdatafilelist.BevelOuter:=bvNone;
+    pdatafilelist.BorderStyle:=bsSingle;
     pdatafilelist.AnchorSideTop.Control:=cbCompareToOtherPointermaps;
     pdatafilelist.AnchorSideTop.Side:=asrBottom;
     pdatafilelist.AnchorSideLeft.Control:=cbCompareToOtherPointermaps;
     pdatafilelist.AnchorSideLeft.Side:=asrLeft;
 
-    pdatafilelist.AnchorSideRight.Control:=cbShowAdvancedOptions;
-    pdatafilelist.AnchorSideRight.Side:=asrLeft;
+    //pdatafilelist.AnchorSideRight.Control:=self;
+    //pdatafilelist.AnchorSideRight.Side:=asrRight;
 
     pdatafilelist.OnEmptyList:=PointerFileListEmpty;
     pdatafilelist.OnResize:=PointerFileListResize;
 
-    pdatafilelist.Anchors:=[akTop, akLeft, akRight];
+    pdatafilelist.Anchors:=[akTop, akLeft]; //, akRight];
 
     pdatafilelist.AutoSize:=true;
+    pdatafilelist.DoAutoSize;
+    pdatafilelist.AdjustPos(pdatafilelist);
 
-    panel3.AnchorSideTop.Control:=pdatafilelist;
-    panel3.AnchorSideTop.Side:=asrBottom;
-    panel3.BorderSpacing.Top:=5;;
+    cbShowAdvancedOptions.AnchorSideTop.Control:=pdatafilelist;
   end
   else
   begin
@@ -1103,9 +1114,7 @@ begin
     pdatafilelist.free;
     pdatafilelist:=nil;
 
-    panel3.AnchorSideTop.Control:=cbCompareToOtherPointermaps;
-    panel3.AnchorSideTop.Side:=asrBottom;
-        panel3.BorderSpacing.Top:=0;;
+    cbShowAdvancedOptions.AnchorSideTop.Control:=cbCompareToOtherPointermaps;
   end;
 
   //UpdateGuiBasedOnSavedPointerScanUsage;
@@ -1140,7 +1149,10 @@ begin
     if Reg.OpenKey('\Software\Cheat Engine\PSNNodeList', false) then
     begin
       oldlist:=tstringlist.create;
-      reg.GetKeyNames(oldlist);
+      try
+        reg.GetKeyNames(oldlist);
+      except
+      end;
 
       for i:=0 to oldlist.count-1 do
         reg.DeleteKey(oldlist[i]);
@@ -1249,8 +1261,10 @@ begin
   edtReverseStop.clientwidth:=i;
 
 
+  {$ifdef windows}
   i:=max(canvas.TextWidth('XXXX')+DPIHelper.GetEditBoxMargins(editStructsize), editStructsize.clientwidth);
   editStructsize.clientwidth:=i;
+  {$endif}
 
   i:=max(btnOk.width, btnCancel.width);
   btnok.autosize:=false;
@@ -1271,7 +1285,9 @@ begin
     MainForm.addresslist.getAddressList(tstrings(cbAddress.tag));
 
   UpdateAddressList(cbAddress);
+  {$ifdef windows}
   AdjustComboboxSize(cbValueType, self.canvas);
+  {$endif}
   cbAddress.ItemHeight:=cbValueType.ItemHeight;
   cbAddress.height:=cbValueType.Height;
 
@@ -1334,7 +1350,10 @@ begin
   if Reg.OpenKey('\Software\Cheat Engine\PSNNodeList', false) then
   begin
     list:=tstringlist.create;
-    Reg.GetKeyNames(list);
+    try
+      Reg.GetKeyNames(list);
+    except
+    end;
 
 
     for i:=0 to list.count-1 do
@@ -1430,6 +1449,7 @@ end;
 
 procedure TfrmPointerScannerSettings.cbUseHeapDataClick(Sender: TObject);
 begin
+  {$ifdef windows}
   cbHeapOnly.Enabled:=cbUseHeapData.Checked;
   if (frmMemoryAllocHandler<>nil) and (frmMemoryAllocHandler.hookedprocessid<>processid) then
     freeandnil(frmMemoryAllocHandler);
@@ -1438,6 +1458,7 @@ begin
   frmMemoryAllocHandler.WaitForInitializationToFinish;
 
   edtAddressChange(cbAddress);
+  {$endif}
 end;
 
 procedure TfrmPointerScannerSettings.Panel1Click(Sender: TObject);
@@ -1495,7 +1516,10 @@ begin
   if gpm then
     cbUseLoadedPointermap.checked:=false
   else
-    cbAddress.SetFocus
+  begin
+    if fsVisible in FormState then
+      cbAddress.SetFocus
+  end;
 
 end;
 
@@ -1504,6 +1528,7 @@ var haserror: boolean;
 begin
   automaticaddress:=symhandler.getAddressFromName(cbAddress.text, false,haserror); //ignore error
 
+  {$ifdef windows}
 
   if cbHeapOnly.Checked then
   begin
@@ -1512,6 +1537,8 @@ begin
    else
      cbAddress.Font.Color:=clRed; //BAD
   end else cbAddress.Font.Color:=clWindowText;
+
+  {$endif}
 
 end;
 

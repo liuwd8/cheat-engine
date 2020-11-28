@@ -5,8 +5,15 @@ unit frmEnumerateDLLsUnit;
 interface
 
 uses
-  windows, LCLIntf, Messages, SysUtils, Classes, Graphics, Controls, Forms,
-  Dialogs,CEFuncProc,imagehlp, StdCtrls, ComCtrls, ExtCtrls, ActnList,
+  {$ifdef darwin}
+  macport, lclproc,
+  {$endif}
+  {$ifdef windows}
+  windows, imagehlp,
+  {$endif}
+
+  LCLIntf, Messages, SysUtils, Classes, Graphics, Controls, Forms,
+  Dialogs,CEFuncProc, StdCtrls, ComCtrls, ExtCtrls, ActnList,
   Menus, LResources,symbolhandler, symbolhandlerstructs, FindDialogFix,
   commonTypeDefs, strutils, ProcessHandlerUnit, Clipbrd;
 
@@ -28,6 +35,7 @@ type
 
   TfrmEnumerateDLLs = class(TForm)
     CopySymbolName: TAction;
+    edImageList: TImageList;
     Label2: TLabel;
     CopySymbolName1: TMenuItem;
     TreeView1: TTreeView;
@@ -218,6 +226,12 @@ begin
     findpos.x:=x[0];
     findpos.y:=x[1];
   end;
+
+
+  {$ifdef darwin}
+  Find.Shortcut:=TextToShortCut('Meta+F');
+  CopySymbolName.Shortcut:=TextToShortCut('Meta+C');
+  {$endif}
 end;
 
 procedure TfrmEnumerateDLLs.FormDestroy(Sender: TObject);

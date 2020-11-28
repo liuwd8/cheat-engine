@@ -5,6 +5,9 @@ unit frmSaveMemoryRegionUnit;
 interface
 
 uses
+  {$ifdef darwin}
+  macport,
+  {$endif}
   LCLIntf, Messages, SysUtils, Classes, Graphics, Controls, Forms, symbolhandler,
   Dialogs, StdCtrls, NewKernelHandler, CEFuncProc, ExtCtrls, LResources, Menus;
 
@@ -13,6 +16,7 @@ type
   { TfrmSaveMemoryRegion }
 
   TfrmSaveMemoryRegion = class(TForm)
+    smrImageList: TImageList;
     miClearList: TMenuItem;
     Panel1: TPanel;
     Panel2: TPanel;

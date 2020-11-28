@@ -5,11 +5,18 @@ unit frmTracerUnit;
 interface
 
 uses
-  windows, NewKernelHandler, LCLIntf, Messages, SysUtils, Classes, Graphics, Controls, Forms,
+  {$ifdef darwin}
+  macport, macportdefines,
+  {$endif}
+  {$ifdef windows}
+  windows,
+  {$endif}
+  NewKernelHandler, LCLIntf, Messages, SysUtils, Classes, Graphics, Controls, Forms,
   Dialogs, StdCtrls, ExtCtrls, Buttons, LResources, commonTypeDefs, frmFindDialogUnit,
-  clipbrd, Menus, ComCtrls, frmStackviewunit, frmFloatingPointPanelUnit;
+  Menus, ComCtrls, frmStackviewunit, frmFloatingPointPanelUnit, disassembler, debuggertypedefinitions;
 
-type TTraceDebugInfo=class
+type
+  TTraceDebugInfo=class
   private
   public
     instruction: string;
@@ -63,6 +70,7 @@ type
     ESPlabel: TLabel;
     FSlabel: TLabel;
     GSlabel: TLabel;
+    ftImageList: TImageList;
     lblInstruction: TLabel;
     lblAddressed: TLabel;
     lvTracer: TTreeView;
@@ -85,9 +93,9 @@ type
     Panel1: TPanel;
     Panel2: TPanel;
     Panel3: TPanel;
-    Panel4: TPanel;
-    Panel5: TPanel;
-    Panel6: TPanel;
+    pnlRegisters: TPanel;
+    pnlSegments: TPanel;
+    pnlFlags: TPanel;
     Panel7: TPanel;
     pnlTracer: TPanel;
     pflabel: TLabel;
@@ -171,6 +179,10 @@ type
 
     registerCompareIgnore: array [0..16] of boolean;
 
+    da: TDisassembler;
+
+    defaultBreakpointMethod: TBreakpointmethod;
+
     procedure configuredisplay;
     procedure setSavestack(x: boolean);
     procedure updatestackview;
@@ -179,6 +191,10 @@ type
     procedure RealignTVAddressScan(Sender: TCustomTreeView;
               Node: TTreeNode; State: TCustomDrawState; Stage: TCustomDrawStage;
               var PaintImages, DefaultDraw: Boolean);
+
+    function getEntry(index: integer): TTraceDebugInfo;
+    function getCount: integer;
+    function getSelectionCount: integer;
   public
     { Public declarations }
     returnfromignore: boolean;
@@ -187,21 +203,25 @@ type
     procedure addRecord;
     procedure finish;
     property savestack: boolean read fsavestack write setSavestack;
+    property Entry[index: integer]: TTraceDebugInfo read getEntry;
     constructor create(Owner: TComponent; DataTrace: boolean=false; skipconfig: boolean=false); overload;
+    constructor createWithBreakpointMethodSet(Owner: TComponent; DataTrace: boolean=false; skipconfig: boolean=false; breakpointmethod: tbreakpointmethod=bpmDebugRegister); overload;
+  published
+    property count: integer read getCount;
+    property selectionCount: integer read getSelectionCount;
   end;
 
 implementation
 
 
-uses cedebugger, debughelper, MemoryBrowserFormUnit, frmTracerConfigUnit,
-  debuggertypedefinitions, processhandlerunit, Globals, Parsers,
-  disassembler,   strutils, cefuncproc,
-  luahandler, symbolhandler, byteinterpreter,
-  tracerIgnore;
+uses  LuaByteTable, clipbrd, CEDebugger, debughelper, MemoryBrowserFormUnit, frmTracerConfigUnit,
+  ProcessHandlerUnit, Globals, Parsers, strutils, CEFuncProc,
+  LuaHandler, symbolhandler, byteinterpreter,
+  tracerIgnore, LuaForm, lua, lualib,lauxlib, LuaClass;
 
 resourcestring
   rsSearch = 'Search';
-  rsTypeTheLUAConditionYouWantToSearchForExampleEAX0x1 = 'Type the (LUA) condition you want to search for (Example: EAX==0x1234)';
+  rsTypeTheLUAConditionYouWantToSearchForExampleEAX0x1 = 'Type the (LUA) condition you want to search for (Example: EAX==0x1234)    '#13#10'Also available: referencedAddress (integer), referencedBytes (bytetable), instruction (string)';
 
 destructor TTraceDebugInfo.destroy;
 begin
@@ -309,11 +329,20 @@ begin
 end;
 
 
+constructor TfrmTracer.createWithBreakpointMethodSet(Owner: TComponent; DataTrace: boolean=false; skipconfig: boolean=false; breakpointmethod: tbreakpointmethod=bpmDebugRegister); overload;
+begin
+  inherited create(owner);
+  fDataTrace:=Datatrace;
+  fSkipConfig:=skipconfig;
+  defaultBreakpointMethod:=breakpointmethod;
+end;
+
 constructor TfrmTracer.create(Owner: TComponent; DataTrace: boolean=false; skipconfig: boolean=false);
 begin
   inherited create(owner);
   fDataTrace:=Datatrace;
   fSkipConfig:=skipconfig;
+  defaultBreakpointMethod:=preferedBreakpointMethod;
 end;
 
 procedure TfrmTracer.finish;
@@ -336,8 +365,6 @@ var s,s2: string;
     haserror: boolean;
     thisnode, thatnode,x: TTreenode;
 
-    da: TDisassembler;
-
     datasize: integer;
     isfloat: boolean;
 begin
@@ -346,11 +373,15 @@ begin
   try
 
     address:=debuggerthread.CurrentThread.context.{$ifdef CPU64}rip{$else}eip{$endif};
-    a:=address;
-    s:=disassemble(a);
 
     a:=address;
-    da:=tdisassembler.Create;
+    if da=nil then
+    begin
+      da:=tdisassembler.Create;
+      da.showsymbols:=symhandler.showsymbols;
+      da.showmodules:=symhandler.showmodules;
+      da.showsections:=symhandler.showsections;
+    end;
     s:=da.disassemble(a, s2);
 
     datasize:=da.LastDisassembleData.datasize;
@@ -358,10 +389,6 @@ begin
       datasize:=4;
 
     isfloat:=da.LastDisassembleData.isfloat;
-
-    da.free;
-
-
 
     referencedAddress:=0;
     if dereference then
@@ -391,7 +418,7 @@ begin
     if savestack then
       d.savestack;
 
-    s:=inttohex(address,8)+' - '+s;
+    s:=symhandler.getNameFromAddress(address)+' - '+s;
 
     if returnfromignore then
     begin
@@ -406,10 +433,10 @@ begin
     else
       thisnode:=lvTracer.Items.AddObject(nil,s,d);
 
-    if not stepover and defaultDisassembler.LastDisassembleData.iscall then
+    if not stepover and da.LastDisassembleData.iscall then
       currentAppendage:=thisnode;
 
-    if (defaultDisassembler.LastDisassembleData.isret) {or returnfromignore} then
+    if (da.LastDisassembleData.isret) {or returnfromignore} then
     begin
       returnfromignore:=false;
       if currentAppendage<>nil then
@@ -477,6 +504,23 @@ procedure TfrmTracer.setSavestack(x: boolean);
 begin
   fsavestack:=x;
   sbShowstack.visible:=x;
+end;
+
+function TfrmTracer.getEntry(index: integer): TTraceDebugInfo;
+begin
+  result:=nil;
+  if (index>=0) and (index<count) then
+    result:=TTraceDebugInfo(lvTracer.Items[index].Data);
+end;
+
+function TfrmTracer.getCount: integer;
+begin
+  result:=lvTracer.Items.count;
+end;
+
+function TfrmTracer.getSelectionCount: integer;
+begin
+  result:=lvTracer.Items.SelectionCount;
 end;
 
 procedure TfrmTracer.FormCreate(Sender: TObject);
@@ -704,6 +748,9 @@ begin
           else
             xmmcount:=8;
 
+
+
+
           {$ifdef cpu64}
           different:=CompareMem(@compareinfo.c.FltSave.XmmRegisters[0], @thisinfo.c.FltSave.XmmRegisters[0], xmmcount*sizeof(M128A));
           {$else}
@@ -790,6 +837,7 @@ begin
   with frmTracerConfig do
   begin
     DataTrace:=fDataTrace;
+    breakpointmethod:=defaultBreakpointMethod;
     if showmodal=mrok then
     begin
       if comparetv<>nil then
@@ -829,14 +877,14 @@ begin
             memorybrowser.hexview.GetSelectionRange(fromaddress,toaddress);
 
           //set the breakpoint
-          debuggerthread.setBreakAndTraceBreakpoint(self, fromaddress, bpTrigger, 1+(toaddress-fromaddress), tcount, startcondition, stopcondition, stepover, nosystem);
+          debuggerthread.setBreakAndTraceBreakpoint(self, fromaddress, bpTrigger, breakpointmethod, 1+(toaddress-fromaddress), tcount, startcondition, stopcondition, stepover, nosystem);
         end
         else
         begin
           if (owner is TMemoryBrowser) then
-            debuggerthread.setBreakAndTraceBreakpoint(self, (owner as TMemoryBrowser).disassemblerview.SelectedAddress, bptExecute, 1, tcount, startcondition, stopcondition, StepOver, Nosystem)
+            debuggerthread.setBreakAndTraceBreakpoint(self, (owner as TMemoryBrowser).disassemblerview.SelectedAddress, bptExecute, breakpointmethod, 1, tcount, startcondition, stopcondition, StepOver, Nosystem)
           else
-            debuggerthread.setBreakAndTraceBreakpoint(self, memorybrowser.disassemblerview.SelectedAddress, bptExecute,1, tcount, startcondition, stopcondition, StepOver, nosystem);
+            debuggerthread.setBreakAndTraceBreakpoint(self, memorybrowser.disassemblerview.SelectedAddress, bptExecute, breakpointmethod, 1, tcount, startcondition, stopcondition, StepOver, nosystem);
         end;
       end;
 
@@ -1174,6 +1222,20 @@ begin
   end;
 end;
 
+function bytesToLuaByteTableString(bytes: PByteArray; size: integer): string;
+var i: integer;
+begin
+  result:='{';
+  for i:=0 to size-1 do
+  begin
+    if i>0 then
+      result:=result+','+inttostr(bytes[i])
+    else
+      result:=result+inttostr(bytes[i]);
+  end;
+
+  result:=result+'}';
+end;
 
 procedure TfrmTracer.MenuItem4Click(Sender: TObject);
 var
@@ -1181,6 +1243,11 @@ var
   c: PContext;
   check: boolean;
   searchstring: string;
+
+  script: tstringlist=nil;
+  usesReferencedAddress: boolean=false;
+  usesReferencedBytes: boolean=false;
+  usesInstruction: boolean=false;
 begin
   if finddialog=nil then
   begin
@@ -1203,6 +1270,17 @@ begin
   if check then
   begin
     searchstring:='return '+lastsearchstring;
+    usesReferencedAddress:=searchstring.Contains('referencedAddress'); //screw the user if he uses comments
+    usesReferencedBytes:=searchstring.Contains('referencedBytes');
+    usesInstruction:=searchstring.Contains('instruction');
+
+    script:=tstringlist.Create;
+    script.Text:=searchstring;
+
+    script.Insert(0,''); //space for referencedAddress
+    script.Insert(1,''); //space for referencedBytes
+    script.Insert(2,''); //space for instruction
+
 
 
     stopsearch:=false;
@@ -1217,12 +1295,23 @@ begin
       else
         i:=lvTracer.Selected.AbsoluteIndex+1;
 
+
+
       while (i<lvTracer.items.count) and (not stopsearch) do
       begin
         c:=@TTraceDebugInfo(lvTracer.Items[i].data).c;
         if c<>nil then
         begin
-          if CheckIfConditionIsMetContext(0, c, searchstring) then
+          if usesReferencedAddress then
+            script[0]:='local referencedAddress=0x'+inttohex(TTraceDebugInfo(lvTracer.Items[i].data).referencedAddress,8);
+
+          if usesReferencedBytes then
+            script[1]:='local referencedBytes='+bytesToLuaByteTableString(TTraceDebugInfo(lvTracer.Items[i].data).bytes, TTraceDebugInfo(lvTracer.Items[i].data).bytesize);
+
+          if usesInstruction then
+            script[2]:='local instruction=[['+TTraceDebugInfo(lvTracer.Items[i].data).instruction+']]';
+
+          if CheckIfConditionIsMetContext(0, c, script.text) then
           begin
             lvTracer.Items[i].Selected:=true;
             lvTracer.MakeSelectionVisible;
@@ -1249,7 +1338,16 @@ begin
         c:=@TTraceDebugInfo(lvTracer.Items[i].data).c;
         if c<>nil then
         begin
-          if CheckIfConditionIsMetContext(0, c, searchstring) then
+          if usesReferencedAddress then
+            script[0]:='local referencedAddress=0x'+inttohex(TTraceDebugInfo(lvTracer.Items[i].data).referencedAddress,8);
+
+          if usesReferencedBytes then
+            script[1]:='local referencedBytes='+bytesToLuaByteTableString(TTraceDebugInfo(lvTracer.Items[i].data).bytes, TTraceDebugInfo(lvTracer.Items[i].data).bytesize);
+
+          if usesInstruction then
+            script[2]:='local instruction=[['+TTraceDebugInfo(lvTracer.Items[i].data).instruction+']]';
+
+          if CheckIfConditionIsMetContext(0, c, script.text) then
           begin
             lvTracer.Items[i].Selected:=true;
             lvTracer.MakeSelectionVisible;
@@ -1267,6 +1365,9 @@ begin
 
     pnlSearch.visible:=false;
   end;
+
+  if script<>nil then
+    freeandnil(script);
 end;
 
 procedure TfrmTracer.Panel1Click(Sender: TObject);
@@ -1301,8 +1402,10 @@ end;
 
 procedure TfrmTracer.FormDestroy(Sender: TObject);
 begin
-  saveformposition(self);
+  if da<>nil then
+    da.free;
 
+  saveformposition(self);
 end;
 
 procedure TfrmTracer.configuredisplay;
@@ -1326,7 +1429,7 @@ begin
 
         with l do
         begin
-          parent:=panel4;
+          parent:=pnlRegisters;
           font:=eaxlabel.font;
           parentfont:=true;
           cursor:=eaxlabel.cursor;
@@ -1657,16 +1760,41 @@ begin
 end;
 
 procedure TfrmTracer.lvTracerDblClick(Sender: TObject);
+var
+  a: ptruint;
+  syma: ptruint;
+  sym: string;
+  i: integer;
+  e: boolean;
 begin
+
   if (lvTracer.selected<>nil) and (lvTracer.selected.data<>nil) then
-    memorybrowser.disassemblerview.SelectedAddress:=TTraceDebugInfo(lvTracer.selected.data).c.{$ifdef cpu64}rip{$else}Eip{$endif};
+  begin
+    syma:=0;
+    a:=TTraceDebugInfo(lvTracer.selected.data).c.{$ifdef cpu64}rip{$else}Eip{$endif};
+    e:=true;
+    i:=RPos(' - ', lvTracer.Selected.Text);
+    if i>0 then
+    begin
+      sym:=copy(lvTracer.Selected.Text,1,i);
+      sym:=trim(sym);
+
+      if sym<>'' then
+        syma:=symhandler.getAddressFromName(sym,false,e);
+    end;
+
+    if not e then
+      memorybrowser.disassemblerview.SelectedAddress:=syma
+    else
+      memorybrowser.disassemblerview.SelectedAddress:=a
+  end;
 end;
 
 procedure TfrmTracer.Panel1Resize(Sender: TObject);
 begin
   panel7.Top:=(panel1.ClientHeight div 2)-panel7.Height;
-  if panel7.top<(panel6.top+panel6.height) then
-    panel7.top:=panel6.top+panel6.height;
+  if panel7.top<(pnlFlags.top+pnlFlags.height) then
+    panel7.top:=pnlFlags.top+pnlFlags.height;
 end;
 
 procedure TfrmTracer.sbShowFloatsClick(Sender: TObject);
@@ -1687,15 +1815,19 @@ end;
 procedure TfrmTracer.FormShow(Sender: TObject);
 var minwidth: integer;
 begin
-  panel1.Font.Height:=GetFontData(font.Handle).Height;
-  if panel1.Font.Height>-13 then
-    panel1.Font.Height:=-13;
+  panel1.Font.Size:=10;
 
-  lblInstruction.font:=font;
-  sbShowFloats.font:=font;
-  sbShowstack.font:=font;
-  button1.Font:=font;;
+
+  lblInstruction.font.size:=10;
+  sbShowFloats.font.size:=10;
+  sbShowstack.font.size:=10;
+  button1.Font.size:=10;
+  pnlRegisters.font.size:=10;
+  pnlFlags.Font.size:=10;
+  pnlSegments.font.size:=10;
+
   Panel1Resize(panel1);
+
 
   if loadedformpos=false then
   begin
@@ -1720,8 +1852,96 @@ begin
   updatestackview;
 end;
 
+function frmTracer_getEntry(L: PLua_state): integer; cdecl;
+var
+  f: TfrmTracer;
+  i: integer;
+
+  e: TTraceDebugInfo;
+  t: integer;
+
+  ct: integer;
+begin
+  f:=luaclass_getClassObject(L);
+  i:=lua_tointeger(L,1);
+
+  result:=0;
+  e:=f.Entry[i];
+  if e=nil then
+    exit(0);
+
+  lua_newtable(L);
+  t:=lua_gettop(L);
+
+  lua_pushstring(L,'address');
+  lua_pushinteger(L,{$ifdef cpu64}e.c.RIP{$else}e.c.EIP{$endif});
+  lua_settable(L,t);
+
+  lua_pushstring(L,'selected');
+  if (i>=0) and (i<f.lvTracer.Items.Count) then
+    lua_pushboolean(L, f.lvTracer.Items[i].Selected)
+  else
+    lua_pushboolean(L, false);
+  lua_settable(L,t);
+
+  lua_pushstring(L,'instruction');
+  lua_pushstring(L,e.instruction);
+  lua_settable(L,t);
+
+  lua_pushstring(L,'instructionSize');
+  lua_pushinteger(L,e.instructionsize);
+  lua_settable(L,t);
+
+  lua_pushstring(L,'referencedAddress');
+  lua_pushinteger(L,e.referencedAddress);
+  lua_settable(L,t);
+
+  lua_pushstring(L,'context');
+  lua_pushcontext(L,@e.c);
+  lua_settable(L,t);
+
+  lua_pushstring(L,'referencedData');
+  CreateByteTableFromPointer(L,e.bytes,e.bytesize);
+  lua_settable(L,t);
+
+  lua_pushstring(L,'hasStackSnapshot');
+  lua_pushboolean(L, e.stack.stack<>nil);
+  lua_settable(L,t);
+
+  result:=1;
+end;
+
+function frmTracer_getStack(L: PLua_state): integer; cdecl;
+var
+  f: TfrmTracer;
+  i: integer;
+
+  e: TTraceDebugInfo;
+begin
+  f:=luaclass_getClassObject(L);
+  i:=lua_tointeger(L,1);
+
+  result:=0;
+  e:=f.Entry[i];
+  if (e=nil) or (e.stack.stack=nil) then
+    exit(0);
+
+  CreateByteTableFromPointer(L,pbytearray(e.stack.stack),e.stack.savedsize);
+  result:=1;
+end;
+
+procedure frmTracer_addMetaData(L: PLua_state; metatable: integer; userdata: integer );
+begin
+  customform_addMetaData(L, metatable, userdata);
+  luaclass_addArrayPropertyToTable(L, metatable, userdata, 'Entry', frmTracer_getEntry, nil);
+  luaclass_addArrayPropertyToTable(L, metatable, userdata, 'StackEntry', frmTracer_getStack, nil);
+
+end;
+
 initialization
   registerclass(TfrmTracer);
+  luaclass_register(TfrmTracer, frmTracer_addMetaData);
+
   {$i frmTracerUnit.lrs}
 
 end.

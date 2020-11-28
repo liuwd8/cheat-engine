@@ -5,9 +5,8 @@ unit LuaForm;
 interface
 
 uses
-  jwawindows, windows, Classes, SysUtils, Controls, menus, lua, lualib, lauxlib, LuaHandler,
-  LuaCaller, pluginexports, forms, dialogs, ceguicomponents, XMLWrite, XMLRead,
-  Graphics, DOM, cefuncproc, newkernelhandler, typinfo;
+
+  Classes, lua;
 
 procedure initializeLuaForm;
 
@@ -15,7 +14,17 @@ procedure customForm_addMetaData(L: PLua_state; metatable: integer; userdata: in
 
 implementation
 
-uses luaclass, LuaCustomControl;
+uses
+  {$ifdef windows}
+  jwawindows, windows,
+  {$endif}
+  {$ifdef darwin}
+  mactypes,
+  {$endif}
+  SysUtils, Controls, menus, lualib, lauxlib, LuaHandler,
+  LuaCaller, pluginexports, forms, dialogs, ceguicomponents, XMLWrite, XMLRead,
+  Graphics, DOM, cefuncproc, newkernelhandler, typinfo, LCLIntf, LCLProc,
+  LuaClass, LuaCustomControl;
 
 resourcestring
   rsTheGivenFormIsNotCompatible = 'The given form is not compatible. Formclass=';
@@ -142,7 +151,7 @@ var
 begin
   result:=1;
   f:=luaclass_getClassObject(L);
-  lua_pushboolean(L, GetForegroundWindow()=f.Handle);
+  lua_pushboolean(L, GetForegroundWindow=f.Handle);
 end;
 
 function customform_getMenu(L: PLua_State): integer; cdecl;
@@ -209,6 +218,7 @@ var
   ri: TRasterImage;
 begin
   result:=0;
+  {$ifdef windows}
   f:=luaclass_getClassObject(L);
 
 
@@ -221,6 +231,7 @@ begin
 
     printwindow(f.handle, ri.Canvas.Handle, PW_CLIENTONLY);
   end;
+  {$endif}
 end;
 
 function customform_dragNow(L: Plua_State): integer; cdecl;
@@ -228,11 +239,81 @@ var
   f: TCustomForm;
 begin
   result:=0;
+  {$ifdef windows}
   f:=luaclass_getClassObject(L);
   ReleaseCapture;
   SendMessageA(f.Handle,WM_SYSCOMMAND,$F012,0);
+  {$endif}
 end;
 
+function customform_saveFormPosition(L: Plua_State): integer; cdecl;
+var
+  f: TCustomForm;
+  values: array of integer;
+  al: size_t;
+  i: integer;
+begin
+  result:=0;
+  f:=luaclass_getClassObject(L);
+
+  if f.name='' then exit(0);
+
+
+  if (lua_gettop(L)>=1) and (lua_istable(L,1)) then
+  begin
+    al:=lua_objlen(L,1);
+    setlength(values, al);
+
+    for i:=1 to al do
+    begin
+      lua_pushinteger(L,i);
+      lua_gettable(L,1);
+      values[i-1]:=lua_tointeger(L,-1);
+      lua_pop(L,1);
+    end;
+
+    SaveFormPosition(f, values);
+  end
+  else
+    SaveFormPosition(f);
+end;
+
+function customform_loadFormPosition(L: Plua_State): integer; cdecl;
+var
+  f: TCustomForm;
+  values: array of integer;
+  i: integer;
+begin
+  result:=0;
+  f:=luaclass_getClassObject(L);
+  if f.name='' then exit(0);
+
+  setlength(values,0);
+  if LoadFormPosition(f, values) then
+  begin
+    lua_pushboolean(L, true);
+    if length(values)>0 then
+    begin
+      lua_createtable(L,length(values),0);
+      for i:=1 to length(values) do
+      begin
+        lua_pushinteger(L,i);
+        lua_pushinteger(L,values[i-1]);
+        lua_settable(L,-3);
+      end;
+
+      exit(2);
+    end
+    else
+      exit(1);
+  end
+  else
+  begin
+    lua_pushboolean(L,false);
+    exit(1);
+  end;
+
+end;
 
 function createFormFromFile(L: Plua_State): integer; cdecl;
 var filename: string;
@@ -355,6 +436,179 @@ begin
   end;
 end;
 
+
+function customform_unregisterCreateCallback(L: PLua_State): integer; cdecl;
+var
+  lc: TLuacaller;
+  form: TCustomForm;
+begin
+  result:=0;
+  form:=luaclass_getClassObject(L);
+
+  if lua_gettop(L)=1 then
+  begin
+    lc:=lua_ToCEUserData(L, -1);
+    if lc<>nil then
+      form.RemoveHandlerCreate(lc.NotifyEvent);
+
+    lc.Free;
+  end;
+end;
+
+function customform_registerCreateCallback(L: PLua_State): integer; cdecl;
+var lc: TLuaCaller;
+  f: integer;
+  routine: string;
+  form: TCustomForm;
+begin
+  result:=0;
+  form:=luaclass_getClassObject(L);
+
+  if lua_gettop(L)=1 then
+  begin
+    lc:=nil;
+
+    if lua_isfunction(L,-1) then
+    begin
+      f:=luaL_ref(L,LUA_REGISTRYINDEX);
+
+      lc:=TLuaCaller.create;
+      lc.luaroutineIndex:=f;
+      form.AddHandlerCreate(lc.NotifyEvent);
+    end
+    else
+    if lua_isstring(L,-1) then
+    begin
+      routine:=lua_tostring(L,-1);
+      lc:=TLuaCaller.create;
+      lc.luaroutine:=routine;
+      form.AddHandlerCreate(lc.NotifyEvent);
+    end;
+
+    luaclass_newClass(L, lc);
+    result:=1;
+  end;
+end;
+
+
+function customform_unregisterFirstShowCallback(L: PLua_State): integer; cdecl;
+var
+  lc: TLuacaller;
+  form: TCustomForm;
+
+  m: TMethod;
+  nr: TNotifyEvent;
+begin
+  result:=0;
+  form:=luaclass_getClassObject(L);
+
+  if lua_gettop(L)=1 then
+  begin
+    lc:=lua_ToCEUserData(L, -1);
+    if lc<>nil then
+    begin
+      nr:=lc.NotifyEvent;
+      m:=Tmethod(nr);
+      if tobject(m.data) is TLuaCaller then
+      begin
+        form.RemoveHandlerFirstShow(nr);
+        lc.Free;
+      end;
+    end;
+
+
+  end;
+end;
+
+function customform_registerFirstShowCallback(L: PLua_State): integer; cdecl;
+var lc: TLuaCaller;
+  f: integer;
+  routine: string;
+  form: TCustomForm;
+begin
+  result:=0;
+  form:=luaclass_getClassObject(L);
+
+  if lua_gettop(L)=1 then
+  begin
+    lc:=nil;
+
+    if lua_isfunction(L,-1) then
+    begin
+      f:=luaL_ref(L,LUA_REGISTRYINDEX);
+
+      lc:=TLuaCaller.create;
+      lc.luaroutineIndex:=f;
+      form.AddHandlerFirstShow(lc.NotifyEvent);
+    end
+    else
+    if lua_isstring(L,-1) then
+    begin
+      routine:=lua_tostring(L,-1);
+      lc:=TLuaCaller.create;
+      lc.luaroutine:=routine;
+      form.AddHandlerFirstShow(lc.NotifyEvent);
+    end;
+
+    luaclass_newClass(L, lc);
+    result:=1;
+  end;
+end;
+
+function customform_unregisterCloseCallback(L: PLua_State): integer; cdecl;
+var
+  lc: TLuacaller;
+  form: TCustomForm;
+begin
+  result:=0;
+  form:=luaclass_getClassObject(L);
+
+  if lua_gettop(L)=1 then
+  begin
+    lc:=lua_ToCEUserData(L, -1);
+    if lc<>nil then
+      form.RemoveHandlerClose(lc.CloseEvent);
+
+    lc.Free;
+  end;
+end;
+
+function customform_registerCloseCallback(L: PLua_State): integer; cdecl;
+var lc: TLuaCaller;
+  f: integer;
+  routine: string;
+  form: TCustomForm;
+begin
+  result:=0;
+  form:=luaclass_getClassObject(L);
+
+  if lua_gettop(L)=1 then
+  begin
+    lc:=nil;
+
+    if lua_isfunction(L,-1) then
+    begin
+      f:=luaL_ref(L,LUA_REGISTRYINDEX);
+
+      lc:=TLuaCaller.create;
+      lc.luaroutineIndex:=f;
+      form.AddHandlerClose(lc.CloseEvent);
+    end
+    else
+    if lua_isstring(L,-1) then
+    begin
+      routine:=lua_tostring(L,-1);
+      lc:=TLuaCaller.create;
+      lc.luaroutine:=routine;
+      form.AddHandlerClose(lc.CloseEvent);
+    end;
+
+    luaclass_newClass(L, lc);
+    result:=1;
+  end;
+end;
+
+
 procedure customform_addMetaData(L: PLua_state; metatable: integer; userdata: integer );
 begin
   customcontrol_addMetaData(L, metatable, userdata);
@@ -374,6 +628,19 @@ begin
   luaclass_addClassFunctionToTable(L, metatable, userdata, 'setBorderStyle', customform_setBorderStyle);
   luaclass_addClassFunctionToTable(L, metatable, userdata, 'printToRasterImage', customform_printToRasterImage);
   luaclass_addClassFunctionToTable(L, metatable, userdata, 'dragNow', customform_dragNow);
+
+  luaclass_addClassFunctionToTable(L, metatable, userdata, 'registerCreateCallback', customform_registerCreateCallback);
+  luaclass_addClassFunctionToTable(L, metatable, userdata, 'registerFirstShowCallback', customform_registerFirstShowCallback);
+  luaclass_addClassFunctionToTable(L, metatable, userdata, 'registerCloseCallback', customform_registerCloseCallback);
+
+  luaclass_addClassFunctionToTable(L, metatable, userdata, 'unregisterCreateCallback', customform_unregisterCreateCallback);
+  luaclass_addClassFunctionToTable(L, metatable, userdata, 'unregisterFirstShowCallback', customform_unregisterFirstShowCallback);
+  luaclass_addClassFunctionToTable(L, metatable, userdata, 'unregisterCloseCallback', customform_unregisterCloseCallback);
+
+
+  luaclass_addClassFunctionToTable(L, metatable, userdata, 'saveFormPosition', customform_saveFormPosition);
+  luaclass_addClassFunctionToTable(L, metatable, userdata, 'loadFormPosition', customform_loadFormPosition);
+
 
 
   luaclass_addPropertyToTable(L, metatable, userdata, 'OnClose', customform_getOnClose, customform_setOnClose);

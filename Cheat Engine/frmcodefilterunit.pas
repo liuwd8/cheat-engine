@@ -7,7 +7,8 @@ interface
 uses
   Classes, SysUtils, FileUtil, Forms, Controls, Graphics, Dialogs, StdCtrls,
   ComCtrls, ExtCtrls, maps, Menus, syncobjs, newkernelhandler,
-  ProcessHandlerUnit, CodeFilterCallOrAllDialog, PEInfoFunctions, PEInfounit;
+  ProcessHandlerUnit, CodeFilterCallOrAllDialog, PEInfoFunctions, PEInfounit,
+  lua, lualib, lauxlib, LuaForm, LuaClass{$ifdef darwin},macport{$endif};
 
 type
 
@@ -23,9 +24,10 @@ type
     btnShowList: TButton;
     btnStart: TButton;
     btnStop: TButton;
-    Button1: TButton;
+    btnFromUnwindInfo: TButton;
     frmLaunchBranchMapper: TButton;
     GroupBox1: TGroupBox;
+    cfImageList: TImageList;
     Label1: TLabel;
     Label3: TLabel;
     lblExecuteCount: TLabel;
@@ -54,7 +56,7 @@ type
     procedure btnShowListClick(Sender: TObject);
     procedure btnStartClick(Sender: TObject);
     procedure btnStopClick(Sender: TObject);
-    procedure Button1Click(Sender: TObject);
+    procedure btnFromUnwindInfoClick(Sender: TObject);
     procedure frmLaunchBranchMapperClick(Sender: TObject);
     procedure Button7Click(Sender: TObject);
     procedure FilterClick(Sender: TObject);
@@ -108,10 +110,13 @@ type
 
   public
     { public declarations }
+    function isInList(address: ptruint): boolean;
     function isBreakpoint(address: ptruint; var originalbyte: byte): boolean;
     function handleBreakpoint(address: ptruint): boolean; //called by TDebugThreadHandler's. If true it knows it should just continue from here
     property hasBreakpointsSet: boolean read breakpointsSet;
   end;
+
+procedure initializeLuaCodeFilter;
 
 var
   frmCodeFilter: TfrmCodeFilter;
@@ -122,7 +127,7 @@ implementation
 
 uses CEFuncProc, DissectCodeunit, DissectCodeThread, frmDisassemblyscanunit,
   frmSelectionlistunit, commonTypeDefs, symbolhandler, MemoryBrowserFormUnit,
-  CEDebugger, frmBranchMapperUnit, symbolhandlerstructs;
+  CEDebugger, frmBranchMapperUnit, symbolhandlerstructs, LuaHandler;
 
 { TfrmCodeFilter }
 
@@ -551,6 +556,14 @@ begin
 end;
 
 
+function TfrmCodeFilter.isInList(address: ptruint): boolean;
+var bpinfo: Pbpinfo;
+begin
+  callMapMREW.Beginread;
+  result:=callmap.HasId(address);
+  callMapMREW.Endread;
+end;
+
 function TfrmCodeFilter.isBreakpoint(address: ptruint; var originalbyte: byte): boolean;
 var bpinfo: Pbpinfo;
 begin
@@ -739,6 +752,8 @@ function TfrmCodeFilter.ModuleListSelectionListSelToText(index: integer; listTex
 begin
   if modulelist<>nil then
     result:=inttohex(tmoduledata(modulelist.Objects[index]).moduleaddress,8)+'-'+inttohex(tmoduledata(modulelist.Objects[index]).moduleaddress+tmoduledata(modulelist.Objects[index]).modulesize,8)
+  else
+    result:='';
 end;
 
 procedure TfrmCodeFilter.btnLoadAddressesByDisassemblingClick(Sender: TObject);
@@ -824,6 +839,9 @@ begin
     scanner.show;
     btnLoadAddressesByDisassembling.enabled:=false;
   end;
+
+
+  freeandnil(sellist);
 end;
 
 procedure TfrmCodeFilter.btnLoadAddressesFromFileClick(Sender: TObject);
@@ -851,7 +869,7 @@ begin
     if ext='.txt' then
     begin
       l:=tstringlist.create;
-      l.LoadFromFile(opendialog.FileName);
+      l.LoadFromFile(opendialog.FileName{$if FPC_FULLVERSION>=030200},true{$endif});
       for i:=0 to l.count-1 do
         addAddress(symhandler.getAddressFromName(trim(l[i])));
 
@@ -909,9 +927,51 @@ begin
   disableAllBreakpoints;
 end;
 
-procedure TfrmCodeFilter.Button1Click(Sender: TObject);
-begin
+procedure TfrmCodeFilter.btnFromUnwindInfoClick(Sender: TObject);
+{$ifdef windows}
+var
+  sellist: TfrmSelectionList;
+  md: tmoduledata;
 
+  el: TExceptionList;
+  i: integer;
+
+  rte: TRunTimeEntry;
+{$endif}
+begin
+  {$ifdef windows}
+  if modulelist<>nil then
+    cleanModuleList(modulelist);
+
+  modulelist:=tstringlist.create;
+  GetModuleList(modulelist,true);
+
+
+  sellist:=TfrmSelectionList.Create(self, modulelist);
+  sellist.Caption:=rsCodeFilter;
+  sellist.SelectionToText:=ModuleListSelectionListSelToText;
+
+  if sellist.ShowModal=mrok then
+  begin
+    if sellist.itemindex<>-1 then
+    begin
+      md:=tmoduledata(modulelist.objects[sellist.itemindex]);
+      el:=peinfo_getExceptionList(md.moduleaddress);
+      if el<>nil then
+      begin
+        for i:=0 to el.Count-1 do
+          addAddress(md.moduleaddress+el[i].start);
+      end;
+    end;
+
+    lblAddressList.caption:=format(rsAddressList, [callmap.Count]);
+    btnShowList.Click;
+
+    btnStart.enabled:=callmap.count>0;
+  end;
+  {$else}
+  MessageDlg('Only for windows',mtError,[mbok],0);
+  {$endif}
 end;
 
 procedure TfrmCodeFilter.frmLaunchBranchMapperClick(Sender: TObject);
@@ -946,6 +1006,7 @@ begin
   end;
 
   dofilter;
+  count:=0;
 end;
 
 procedure TfrmCodeFilter.FormClose(Sender: TObject;
@@ -1089,6 +1150,48 @@ begin
   addresslist.Clear;
   lvResults.items.count:=0;
 end;
+
+//lua
+function frmCodeFilter_isInList(L: PLua_state): integer; cdecl;
+var
+  f: TfrmCodeFilter;
+  r: boolean;
+  count: integer;
+begin
+  result:=0;
+  f:=TfrmCodeFilter(luaclass_getClassObject(L));
+  if lua_gettop(L)>=1 then
+  begin
+    lua_pushboolean(L,f.isInList(lua_tointeger(L,1)));
+    result:=1;
+  end;
+end;
+
+function lua_getUltimap2(L: PLua_state): integer; cdecl;
+begin
+  luaclass_newClass(L,frmCodeFilter);
+  result:=1;
+end;
+
+procedure frmCodeFilter_addMetaData(L: PLua_state; metatable: integer; userdata: integer );
+begin
+  customform_addMetaData(L, metatable, userdata);
+  luaclass_addClassFunctionToTable(L, metatable, userdata, 'isInList', @frmCodeFilter_isInList);
+end;
+
+procedure initializeLuaCodeFilter;
+begin
+  lua_register(LuaVM, 'getCodeFilter', @lua_getUltimap2);
+end;
+
+
+initialization
+  registerclass(TfrmCodeFilter);
+
+  luaclass_register(TfrmCodeFilter, @frmCodeFilter_addMetaData);
+
+end.
+
 
 end.
 

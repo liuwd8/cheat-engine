@@ -7,12 +7,19 @@ unit CEFuncProc;
 
 interface
 
-uses jwawindows, zstream, windows, LazUTF8, LCLIntf,StdCtrls,Classes,SysUtils,dialogs,{tlhelp32,}forms,messages,
+uses
+  {$ifdef darwin}
+   mactypes, LCLType,macport,
+  {$endif}
+  {$ifdef windows}
+   jwawindows, windows,
+  {$endif}
+  zstream, LazUTF8, LCLIntf,StdCtrls,Classes,SysUtils,dialogs,{tlhelp32,}forms,messages,
 Graphics,
 ComCtrls,
 {reinit, }
-assemblerunit,
-imagehlp,
+Assemblerunit,
+  {$ifdef windows}imagehlp,{$endif}
 registry,
 ExtCtrls,
 LastDisassembleData,
@@ -27,8 +34,8 @@ hypermode,
 {$endif}
 {$endif}
 {$endif}
- math,syncobjs, shellapi, ProcessHandlerUnit, controls, shlobj, ActiveX, strutils,
-commontypedefs, Win32Int, maps, lua, lualib, lauxlib;
+ math,syncobjs, {$ifdef windows}shellapi,{$endif} ProcessHandlerUnit, controls, {$ifdef windows}shlobj, ActiveX,{$endif} strutils,
+commontypedefs, {$ifdef windows}Win32Int,{$endif} maps, lua, lualib, lauxlib{$ifdef darwin},macportdefines{$endif};
 
 
 const
@@ -198,7 +205,9 @@ const
   splitvalue=400000;
   number=600;      //is my using the new value on my system arround 580000
 
-  WM_HOTKEY2=$8000;
+
+
+  PAGE_WRITECOMBINE=$400;
 
 type
   MemoryRecordcet3 = record
@@ -300,6 +309,7 @@ end;
 
 
 
+function bintohexs(var buf; size: integer):string;
 function ConvertKeyComboToString(x: tkeycombo):string;
 
 {
@@ -341,10 +351,10 @@ implementation
 
 
 uses disassembler,CEDebugger,debughelper, symbolhandler, symbolhandlerstructs,
-     frmProcessWatcherUnit, kerneldebugger, formsettingsunit, MemoryBrowserFormUnit,
+     frmProcessWatcherUnit, KernelDebugger, formsettingsunit, MemoryBrowserFormUnit,
      savedscanhandler, networkInterface, networkInterfaceApi, vartypestrings,
      processlist, Parsers, Globals, xinput, luahandler, LuaClass, LuaObject,
-     UnexpectedExceptionsHelper, LazFileUtils;
+     UnexpectedExceptionsHelper, LazFileUtils, autoassembler, Clipbrd;
 
 
 resourcestring
@@ -474,6 +484,17 @@ begin
   end;
 end;
 
+function bintohexs(var buf; size: integer): string;
+var hs: pchar;
+begin
+  getmem(hs,size*2+1);
+  BinToHex(@buf,hs,size);
+  hs[size*2]:=#0;
+  result:=hs;
+
+  freemem(hs);
+end;
+
 function ConvertKeyComboToString(x: tkeycombo):string;
 var i: integer;
     newstr: string;
@@ -566,8 +587,8 @@ begin
 
         VK_OEM_PLUS : newstr:='=';
         VK_OEM_MINUS : newstr:='-';
-        VK_OEM_PERIOD : newstr:=',';
-        VK_OEM_COMMA : newstr:='.';
+        VK_OEM_PERIOD : newstr:='.';
+        VK_OEM_COMMA : newstr:=',';
         VK_OEM_1 : newstr:=';';
         VK_OEM_2 : newstr:='/';
         VK_OEM_3 : newstr:='`';
@@ -576,6 +597,7 @@ begin
         VK_OEM_6 : newstr:=']';
         VK_OEM_7 : newstr:='''';
 
+        {$ifdef windows}
         VK_PAD_A : newstr:='[A]';
         VK_PAD_B : newstr:='[B]';
         VK_PAD_X : newstr:='[X]';
@@ -608,7 +630,7 @@ begin
         VK_PAD_RTHUMB_UPRIGHT : newstr:='[Right: Up Right]';
         VK_PAD_RTHUMB_DOWNRIGHT : newstr:='[Right: Down Right]';
         VK_PAD_RTHUMB_DOWNLEFT : newstr:='[Right: Down Left]';
-
+         {$endif}
         48..57      : newstr:=chr(x[i]);
         65..90      : newstr:=chr(x[i]);
         else  newstr:='#'+inttostr(x[i]);
@@ -656,6 +678,7 @@ var i: integer;
     ths: thandle;
     tE: threadentry32;
 begin
+  {$ifdef windows}
   if frmProcessWatcher<>nil then
   begin
     //first find a processid using the processwatcher
@@ -676,6 +699,7 @@ begin
     end;
 
   end;
+  {$endif}
 
   //no exit yet, so use a enumeration of all threads and this processid
 
@@ -724,7 +748,10 @@ begin
   try
     lua_getglobal(Luavm, 'loadModule');
     lua_pushstring(Luavm,dllname);
-    if (lua_pcall(Luavm,1,2,0)<>0) then
+    lua_pushboolean(LuaVM,true);
+    lua_pushinteger(LuaVM,10000); //timeout of 10 secs
+
+    if (lua_pcall(Luavm,3,2,0)<>0) then
       raise exception.create('didn''t even run');
 
     if lua_isnil(Luavm,-2) then
@@ -756,6 +783,231 @@ begin
   end;
 end;
 
+{$ifdef darwin}
+Procedure InjectDll(dllname: string; functiontocall: string='');
+var s: tstringlist;
+    allocs: TCEAllocArray;
+    injector: qword;
+    returnvalue: qword;
+    i: integer;
+    x: ptruint;
+    r: dword;
+
+    erroraddress: qword;
+    a: qword;
+    errs: pchar;
+
+    errorstring: string;
+    tid: dword;
+    el: TCEExceptionListArray;
+begin
+  outputdebugstring('cefuncproc.InjectDLL('''+dllname+''','''+functiontocall+''')');
+  s:=tstringlist.create;
+  s.add('[enable]');
+  s.add('registersymbol(v1)');
+  s.add('registersymbol(v2)');
+  s.add('registersymbol(v3)');
+  s.add('registersymbol(injector)');
+  s.add('registersymbol(errorstr)');
+  if processhandler.is64bit then
+  begin
+    s.add('alloc(v1, 8)');
+    s.add('alloc(v2, 8)');
+    s.add('alloc(v3, 8)');
+    s.add('alloc(errorstr, 8)');
+  end
+  else
+  begin
+    s.add('alloc(v1, 4)');
+    s.add('alloc(v2, 4)');
+    s.add('alloc(v3, 4)');
+    s.add('alloc(errorstr, 4)');
+  end;
+
+  s.add('alloc(injector,512)');
+  s.add('alloc(returnvalue, 4)');
+  s.add('label(dllname)');
+  s.add('label(error)');
+  s.add('label(cleanup)');
+  s.add('');
+  s.add('injector:');
+  if processhandler.is64bit then
+  begin
+    //rsp=*8
+    s.add('mov rax,v1');
+    s.add('mov [rax],rsp');
+    s.add('push rbp');
+
+    //rsp=*0
+    s.add('mov rax,v2');
+    s.add('mov [rax],rsp');
+  end
+  else
+  begin
+    //esp=*c
+    s.add('mov [v1],esp');
+    s.add('push ebp');
+    //esp=*8
+    s.add('mov [v2],esp');
+  end;
+
+  if processhandler.is64Bit then
+  begin
+    s.add('mov rdi,dllname');
+    s.add('mov rsi,1');
+  end
+  else
+  begin
+    s.add('push 1'); //rtld lazy
+    //esp=*4
+    s.add('push dllname');
+    //esp=*0
+  end;
+
+  //64-bit: rsp=*0
+  //32-bit: esp=*0
+
+  if processhandler.is64Bit then
+  begin
+    s.add('mov rax,v3');
+    s.add('mov [rax],rsp');
+  end
+  else
+    s.add('mov [v3],esp');
+
+  s.add('call dlopen');
+  //s.add('xor eax,eax');
+
+  s.add('cmp eax,0');
+  s.add('je short error');
+
+  if processhandler.is64Bit then
+  begin
+    s.add('mov rax,returnvalue');
+    s.add('mov dword [rax],1');
+    s.adD('jmp short cleanup');
+    s.add('error:');
+    s.add('mov rax,returnvalue');
+    s.add('mov dword [rax],2');
+    s.add('call dlerror');
+    s.add('mov rsi,errorstr');
+    s.add('mov [rsi],rax');
+  end
+  else
+  begin
+    s.add('mov dword [returnvalue],1');
+    s.adD('jmp short cleanup');
+    s.add('error:');
+    s.add('mov dword [returnvalue],2');
+    s.add('call dlerror');
+    s.add('mov [errorstr],eax');
+  end;
+  s.add('cleanup:');
+
+  if processhandler.is64Bit then
+  begin
+    s.add('pop rbp');
+  end
+  else
+  begin
+    s.add('add esp,8');  //dlopen is a cdecl  (64-bit has no pushed params)
+    s.add('pop ebp');
+  end;
+
+
+  s.add('ret');
+  s.add('');
+  s.add('dllname:');
+  s.add('db '''+dllname+''',0');
+  s.add('');
+  s.add('returnvalue:');
+  s.add('dd 0');
+  s.add('');
+  s.add('[disable]');
+  s.add('dealloc(injector)');
+  s.add('dealloc(returnvalue)');
+
+  //clipboard.AsText:=s.Text;
+
+ // raise exception.create('copy to clipboard now');
+
+
+  setlength(allocs,0);
+  if autoassemble(s,false, true, false, false, allocs,el) then
+  begin
+    injector:=0;
+    returnvalue:=0;
+    for i:=0 to length(allocs)-1 do
+      if allocs[i].varname='injector' then
+        injector:=allocs[i].address
+      else
+      if allocs[i].varname='returnvalue' then
+        returnvalue:=allocs[i].address
+      else
+      if allocs[i].varname='errorstr' then
+        erroraddress:=allocs[i].address;
+
+    //showmessage('injector='+inttohex(injector,8));
+
+    if (injector=0) or (returnvalue=0) then
+      raise exception.create('The dllloader script didn''t properly get injected');
+
+    if CreateRemoteThread(processhandle, nil, 0, pointer(injector),0, 0,tid)=0 then raise exception.Create('Creating the injector thread has failed');
+
+    r:=0;
+    i:=10000 div 50;
+
+    while r=0 do
+    begin
+      dec(i);
+      if i=0 then raise exception.create('Timeout on dll inject');
+
+      if readprocessmemory(processhandle, pointer(returnvalue), @r, 4, x)=false then
+        raise exception.create('The process has crashed');
+
+      if GetCurrentThreadID = MainThreadID then
+        CheckSynchronize; //handle sychronize calls while it's waiting
+
+      if r=0 then sleep(50);
+
+
+
+    end;
+
+    outputdebugstring('library injection code executed successful');
+
+
+    //finally free the injector
+    autoassemble(s, false, false, false, false, allocs, el);   //disable
+
+    if r=2 then
+    begin
+      a:=0;
+      errorstring:='(Unknown reason)';
+      if readprocessmemory(processhandle, pointer(erroraddress), @a, processhandler.pointersize, x) then
+      begin
+        getmem(errs,256);
+        if readprocessmemory(processhandle, pointer(a), errs, 255,x) then
+        begin
+          errs[255]:=#0;
+          errorstring:=errs;
+        end;
+        freemem(errs);
+
+      end;
+      raise exception.create('The dll injection failed in the dlopen part:'+errorstring);
+
+    end;
+  end else raise exception.create('injecting the dllloader script failed');
+
+  s.free;
+
+  outputdebugstring('cefuncproc.InjectDll made it to the end');
+end;
+
+{$endif}
+
+{$ifdef windows}
 Procedure InjectDll(dllname: string; functiontocall: string='');
 var LoadLibraryPtr: pointer;
     GetProcAddressPtr: Pointer;
@@ -1099,6 +1351,7 @@ begin
     end;
   end;
 end;
+{$endif}
 
 
 procedure ToggleOtherWindows;
@@ -1115,6 +1368,7 @@ var winhandle: Hwnd;
     processlist: array of Tprocesslistitem;
     hideall,hidethisone: boolean;
 begin
+{$ifdef windows}
   setlength(processlist,0);
 
 
@@ -1220,10 +1474,12 @@ begin
 
     winhandle:=getwindow(winhandle,GW_HWNDNEXT);
   end;
-
- // application.BringToFront;
+  {$else}
+  application.BringToFront;
+  {$endif}
 end;
 
+var cachedSystemType: integer=-1;
 function GetSystemType: Integer;  //from Stuart Johnson with a little change by me
 const
  { operating system constants }
@@ -1238,11 +1494,17 @@ const
  cOsWinXP = 6;
  cOsNewer = 7;
 
+{$IFDEF windows}
 var
  osVerInfo : TOSVersionInfo;
  majorVer, minorVer : Integer;
+{$ENDIF}
 
 begin
+ {$IFDEF windows}
+ if cachedSystemType<>-1 then
+   exit(cachedSystemType);
+
    if overridedebug then
    begin
      result:=cOsWinXP;
@@ -1296,6 +1558,12 @@ begin
     result := cOsUnknown;
 
   systemtype:=result;
+  {$else}
+
+  result:=cOsUnknown;
+
+ {$ENDIF}
+  cachedSystemType:=result;
 end;
 
 
@@ -1608,8 +1876,11 @@ begin
 end;
 
 function AvailMem:SIZE_T;
+{$IFDEF windows}
 var x: _MEMORYSTATUS;
+{$ENDIF}
 begin
+  {$IFDEF windows}
   x.dwLength:=sizeof(x);
   GlobalMemoryStatus(x);
 
@@ -1618,6 +1889,9 @@ begin
     result:=x.dwAvailPhys+x.dwAvailPageFile
   else
     result:=x.dwAvailVirtual;
+  {$else}
+  result:=-1;
+  {$ENDIF}
 
 end;
 
@@ -1862,7 +2136,7 @@ end;
 procedure Open_Process;
 begin
   {$ifndef netclient}
-  ProcessHandler.ProcessHandle:=NewKernelHandler.OpenProcess(PROCESS_ALL_ACCESS,false,ProcessID);
+  ProcessHandler.ProcessHandle:=NewKernelHandler.OpenProcess(ifthen(GetSystemType<=6,$1f0fff, process_all_access) ,false,ProcessID);
   le:=GetLastError;
   {$endif}
 end;
@@ -1944,6 +2218,7 @@ end;   }
 function GetUserNameFromPID(ProcessId: DWORD): string;
 //credits to Alice0725
 //http://forum.cheatengine.org/viewtopic.php?t=564382
+{$IFDEF windows}
 type
   PTOKEN_USER = ^TOKEN_USER;
 var
@@ -1957,8 +2232,16 @@ var
   bSuccess: boolean;
 
   user, domain: string;
+{$ENDIF}
 begin
   Result := '';
+  {$ifdef darwin}
+  result:=GetEnvironmentVariable('USER');
+  if result='' then
+    result:=GetEnvironmentVariable('USERNAME');
+  {$endif}
+
+  {$IFDEF windows}
   pUser:=nil;
   ProcessHandle := OpenProcess(PROCESS_QUERY_INFORMATION, False, ProcessId);
   if ProcessHandle <> 0 then
@@ -1995,6 +2278,7 @@ begin
 
   if puser<>nil then
     FreeMemandnil(pUser);
+  {$ENDIF}
 end;
 
 procedure GetModuleList(ModuleList: TStrings; withSystemModules: boolean);
@@ -2090,6 +2374,7 @@ var
 
   test: hwnd;
 begin
+  {$IFDEF windows}
   i:=0;
   while (winhandle<>0) and (i<10000) do
   begin
@@ -2103,12 +2388,20 @@ begin
   end;
 
   result:=last; //withcaption;
+  {$else}
+  result:=0;
+  {$ENDIF}
+
 end;
 
+
+{$IFDEF windows}
 function SendMessageTimeout(hWnd: HWND; Msg: UINT; wParam: WPARAM; lParam: LPARAM; fuFlags, uTimeout: UINT; var lpdwResult: ptruint): LRESULT; stdcall; external 'user32' name 'SendMessageTimeoutA';
+{$ENDIF}
 
 
 procedure GetWindowList2(ProcessList: TStrings; showInvisible: boolean=true);
+{$IFDEF windows}
 type
   TBaseHandleMapEntry=record
     entrynr: integer;
@@ -2150,7 +2443,9 @@ var previouswinhandle, winhandle: Hwnd;
   lppe: NewKernelHandler.TProcessEntry32;
 
   found :boolean;
+{$ENDIF}
 begin
+  {$IFDEF windows}
   //first create a processlist so I get the proper order
   setlength(pl,128);
   plpos:=0;
@@ -2179,7 +2474,7 @@ begin
       if processlist.Objects[i]<>nil then
       begin
         ProcessListInfo:=PProcessListInfo(processlist.Objects[i]);
-        if ProcessListInfo.processIcon>0 then
+        if (ProcessListInfo.processIcon<>0) and (ProcessListInfo.processIcon<>HWND(-1)) then
         begin
           if ProcessListInfo^.processID<>GetCurrentProcessId then
             DestroyIcon(ProcessListInfo^.processIcon);
@@ -2230,52 +2525,10 @@ begin
               ProcessListInfo.processID:=winprocess;
               ProcessListInfo.processIcon:=0;
 
-              path:=lowercase(getProcessPathFromProcessID(winprocess));
+              //path:=lowercase(getProcessPathFromProcessID(winprocess));
 
-              ProcessListInfo.issystemprocess:=(ProcessListInfo.processID=4) or (pos(lowercase(windowsdir),path)>0) or (pos('system32',path)>0);
-
-              if formsettings.cbProcessIcons.checked then
-              begin
-                tempptruint:=0;
-
-
-                if SendMessageTimeout(basehandle,WM_GETICON,ICON_BIG,0,SMTO_ABORTIFHUNG, 100, tempptruint )<>0 then
-                begin
-                  ProcessListInfo.processIcon:=tempptruint;
-                  if ProcessListInfo.processIcon=0 then
-                  begin
-                    if SendMessageTimeout(basehandle,WM_GETICON,ICON_SMALL2,0,SMTO_ABORTIFHUNG, 50, tempptruint	)<>0 then
-                      ProcessListInfo.processIcon:=tempptruint;
-
-                    if ProcessListInfo.processIcon=0 then
-                      if SendMessageTimeout(basehandle,WM_GETICON,ICON_SMALL,0,SMTO_ABORTIFHUNG, 25, tempptruint	)<>0 then
-                        ProcessListInfo.processIcon:=tempptruint;
-
-                    if ProcessListInfo.processIcon=0 then
-                    begin
-                      //try the process
-                      HI:=ExtractIcon(hinstance,pchar(path),0);
-                      if HI=0 then
-                      begin
-                        j:=getlasterror;
-
-                        //alternative method:
-
-                        if (winprocess>0) and (uppercase(copy(ExtractFileName(path), 1,3))<>'AVG') then //february 2014: AVG freezes processes that do createtoolhelp32snapshot on it's processes for several seconds. AVG has multiple processes...
-                        begin
-                          s:=GetFirstModuleName(winprocess);
-                          HI:=ExtractIcon(hinstance,pchar(s),0);
-                        end;
-                      end;
-
-                      ProcessListInfo.processIcon:=HI;
-                    end;
-                  end;
-                end else
-                begin
-                  inc(i,100); //at worst case scenario this causes the list to wait 10 seconds
-                end;
-              end;
+              //ProcessListInfo.issystemprocess:=(ProcessListInfo.processID=4) or (pos(lowercase(windowsdir),path)>0) or (pos('system32',path)>0);
+              ProcessListInfo.winhandle:=basehandle;
 
               //before adding check if there is already one with Exactly the same title (e.g: origin)
               found:=false;
@@ -2329,6 +2582,9 @@ begin
     if SNAPHandle<>INVALID_HANDLE_VALUE then
       closehandle(SNAPHandle);
   end;
+  {$else}
+  processlist.clear;
+  {$ENDIF}
 end;
 
 procedure GetWindowList(ProcessList: TStrings; showInvisible: boolean=true);
@@ -2343,6 +2599,7 @@ var previouswinhandle, winhandle: Hwnd;
     ProcessListInfo: PProcessListInfo;
     tempptruint: ptruint;
 begin
+  {$IFDEF windows}
   getmem(temp,101);
   try
     x:=tstringlist.Create;
@@ -2383,31 +2640,8 @@ begin
         begin
           getmem(ProcessListInfo,sizeof(TProcessListInfo));
           ProcessListInfo.processID:=winprocess;
+          ProcessListInfo.winhandle:=winhandle;
           ProcessListInfo.processIcon:=0;
-          ProcessListInfo.issystemprocess:=false;
-
-          if formsettings.cbProcessIcons.checked then
-          begin
-            tempptruint:=0;
-            if SendMessageTimeout(winhandle,WM_GETICON,ICON_SMALL,0,SMTO_ABORTIFHUNG, 100, tempptruint )<>0 then
-            begin
-              ProcessListInfo.processIcon:=tempptruint;
-              if ProcessListInfo.processIcon=0 then
-              begin
-                if SendMessageTimeout(winhandle,WM_GETICON,ICON_SMALL2,0,SMTO_ABORTIFHUNG, 50, tempptruint	)<>0 then
-                  ProcessListInfo.processIcon:=tempptruint;
-
-                if ProcessListInfo.processIcon=0 then
-                  if SendMessageTimeout(winhandle,WM_GETICON,ICON_BIG,0,SMTO_ABORTIFHUNG, 25, tempptruint	)<>0 then
-                    ProcessListInfo.processIcon:=tempptruint;
-              end;
-            end else
-            begin
-              inc(i,100); //at worst case scenario this causes the list to wait 10 seconds
-            end;
-          end;
-
-
           x.AddObject(IntTohex(winprocess,8)+'-'+wintitle,TObject(ProcessListInfo));
         end;
       end;
@@ -2426,6 +2660,9 @@ begin
     freemem(temp);
     temp:=nil;
   end;
+  {$else}
+  processlist.clear;
+  {$ENDIF}
 end;
 
 procedure GetWindowList(ProcessListBox: TListBox; showInvisible: boolean=true);
@@ -2444,14 +2681,17 @@ begin
 end;
 
 function GetCEdir:string;
+{$IFDEF windows}
 var
   PIDL: PItemIDList;
   Path: LPSTR;
   AMalloc: IMalloc;
+{$ENDIF}
 begin
   CheatEngineDir:=ExtractFilePath(application.ExeName);
   result:=CheatEngineDir;
 
+  {$IFDEF windows}
   //blatantly stolen from http://www.scalabium.com/faq/dct0106.htm
   Path := StrAlloc(MAX_PATH);
   SHGetSpecialFolderLocation(0, CSIDL_PERSONAL, PIDL);
@@ -2463,6 +2703,7 @@ begin
 
 
   if DirectoryExists(tablesdir)=false then
+  {$ENDIF}
     tablesdir:='';
 
 end;
@@ -2471,6 +2712,7 @@ function GetWinDir:string;
 var x: pchar;
 begin
   result:='';
+  {$IFDEF windows}
   getmem(x,200);
   if GetWindowsDirectory(x,200)>0 then
   begin
@@ -2479,6 +2721,7 @@ begin
   end;
   freemem(x);
   x:=nil;
+  {$ENDIF}
 end;
 
 Procedure Shutdown;
@@ -2554,7 +2797,9 @@ begin
   begin
     result:=rewritedata(processhandle,address,buffer,size);
 
+    {$IFDEF windows}
     FlushInstructionCache(processhandle,pointer(address),size);
+    {$ENDIF}
   end;
 
 end;
@@ -2562,11 +2807,15 @@ end;
 
 
 function HasHyperthreading: boolean;
+{$IFDEF windows}
 type PSystemLogicalProcessorInformationArray=array [0..0] of TSystemLogicalProcessorInformation;
+{$endif}
 var a,b,c,d: dword;
 
+  {$IFDEF windows}
   l: PSystemLogicalProcessorInformation; //8/13/2011: this structure is bugged because it's not propery aligned, but usefull enough for the first one
   la: PSystemLogicalProcessorInformationArray absolute l;
+  {$ENDIF}
   needed: dword;
 
   succeed: boolean;
@@ -2574,7 +2823,8 @@ begin
   result:=false;
   succeed:=false;
 
-  needed:=0;
+  {$IFDEF windows}
+ needed:=0;
   l:=nil;
   GetLogicalProcessorInformation(@l, @needed);
 
@@ -2595,6 +2845,7 @@ begin
       l:=nil;
     end;
   end;
+ {$ENDIF}
 
   if not succeed then
   begin
@@ -2679,14 +2930,16 @@ function GetCPUCount: integer;
 {
 this function will return how many active cpu cores there are at your disposal
 }
-var cpucount: integer;
+var
     PA,SA: DWORD_PTR;
 begin
+
 {$ifdef NOTMULTITHREADED}
   result:=1;
   exit;
 {$endif}
 
+  {$IFDEF windows}
   //get the cpu and system affinity mask, only processmask is used
   GetProcessAffinityMask(getcurrentprocess,PA,SA);
 
@@ -2694,6 +2947,18 @@ begin
   //in the future make use of getlogicalprocessorinformation
 
   if result=0 then result:=1;
+  {$else}
+  result:=cpucount;
+
+  if result=1 then
+  begin
+    //doubt!
+  {$ifdef darwin}
+    exit(macport.getCPUCount);
+  {$endif}
+
+  end;
+  {$ENDIF}
 end;
 
 
@@ -2702,12 +2967,11 @@ var reg: tregistry;
     s: string;
     buf: PIntegerArray;
     i: integer;
-    z: integer;
-
     r: trect;
     m: TMonitor;
 begin
   result:=false;
+
   buf:=nil;
   try
     reg:=tregistry.create;
@@ -2731,7 +2995,11 @@ begin
 
           getmem(buf, i);
 
-          z:=reg.ReadBinaryData(s,buf[0],i);
+          {$ifdef windows}
+          reg.ReadBinaryData(s,buf[0],i);
+          {$else}
+          HexToBin(pchar(reg.ReadString(s)),pchar(@buf[0]),i);
+          {$endif}
 
           form.position:=poDesigned;
           form.top:=buf[0];
@@ -2787,6 +3055,7 @@ var reg: tregistry=nil;
     temp: integer;
     i: integer;
     s: string;
+    hs: pchar;
 begin
   //save window pos (only when it's in a normal state)
   if form.WindowState=wsNormal then
@@ -2847,7 +3116,13 @@ begin
           s:=form.Name;
           s:=s+rsPosition;
 
+
+
+          {$ifdef windows}
           reg.WriteBinaryData(s,buf.Memory^,buf.Size);
+          {$else}
+          reg.WriteString(s,bintohexs(buf.Memory^, buf.Size));
+          {$endif}
         finally
           if buf<>nil then
             freeandnil(buf);
@@ -2900,6 +3175,8 @@ begin
   dis:=TDisassembler.Create;
   dis.showmodules:=false;
   dis.showsymbols:=false;
+  dis.showsections:=false;
+
   dis.dataOnly:=true;
   try
     dis.disassemble(address,st);
@@ -3099,7 +3376,7 @@ begin
   if (protect and PAGE_WRITECOPY) = PAGE_WRITECOPY then result:=result+'PAGE_WRITECOPY+';
   if (protect and PAGE_GUARD) = PAGE_GUARD then result:=result+'PAGE_GUARD+';
   if (protect and PAGE_NOCACHE) = PAGE_NOCACHE then result:=result+'PAGE_NOCACHE+';
-  if (protect and $400) > 0 then result:=result+'PAGE_WRITECOMBINE+';
+  if (protect and PAGE_WRITECOMBINE) > 0 then result:=result+'PAGE_WRITECOMBINE+';
 
   if length(result)>0 then
     result:=Copy(result,1,length(result)-1)+'('+inttohex(protect,1)+')';
@@ -3177,16 +3454,24 @@ function getProcessPathFromProcessID(pid: dword): string;
 var ths: thandle;
     me32:MODULEENTRY32;
 begin
+  outputdebugstring('getProcessPathFromProcessID('+inttostr(pid)+')');
   result:='';
   me32.dwSize:=sizeof(MODULEENTRY32);
   ths:=CreateToolhelp32Snapshot(TH32CS_SNAPMODULE or TH32CS_SNAPMODULE32,pid);
   if ths<>0 then
   begin
     if Module32First(ths,me32) then
+    begin
+      outputdebugstring('me32.szExePath='+me32.szExePath);
       result:=me32.szExePath;
+    end
+    else
+      OutputDebugString('Module32First failed');
 
     closehandle(ths);
-  end;
+  end
+  else
+    OutputDebugString('CreateToolhelp32Snapshot failed');
 end;
 
 function getProcessnameFromProcessID(pid: dword): string;
@@ -3213,6 +3498,7 @@ var need:dword;
     drivername: pchar;
 begin
   list.clear;
+  {$IFDEF windows}
   EnumDevicedrivers(nil,0,need);
   getmem(x,need);
   try
@@ -3236,6 +3522,7 @@ begin
   finally
     freememandnil(x);
   end;
+  {$ENDIF}
 end;
 
 
@@ -3266,6 +3553,7 @@ begin
 end;
 
 function GetStackStart(threadnr: integer=0): ptruint;
+{$IFDEF windows}
 var
   c: tcontext;    //do not move, or be sure it's on a proper alignment
   tbi: THREAD_BASIC_INFORMATION;
@@ -3285,10 +3573,12 @@ var
   buf: pointer;
   buf32: PDwordArray absolute buf;
   buf64: PQWordArray absolute buf;
+{$ENDIF}
 //gets the stack base of the main thread, then checks where the "exitThread" entry is located and uses that -pointersize as the stackbase
 begin
   result:=0;
 
+  {$IFDEF windows}
   //get the first thread of this process
   if symhandler.getmodulebyname('kernel32.dll', mi)=false then
   begin
@@ -3389,6 +3679,7 @@ begin
     until Thread32Next(ths, te32)=false;
     closehandle(ths);
   end;
+  {$ENDIF}
 
 end;
 
@@ -3410,29 +3701,43 @@ begin
 end;
 
 procedure protectme(pid: dword=0);
+{$IFDEF windows}
 var
   h: thandle;
   sa: SECURITY_ATTRIBUTES;
+{$ENDIF}
 begin
+  {$IFDEF windows}
   if pid=0 then
     pid:=GetCurrentProcessId;
-  h:=OpenProcess(PROCESS_ALL_ACCESS, false, pid);
+  h:=OpenProcess(ifthen(GetSystemType<=6,$1f0fff, process_all_access), false, pid);
 
   sa.nLength:=sizeof(sa);
   sa.bInheritHandle:=false;
   if ConvertStringSecurityDescriptorToSecurityDescriptorA('D:P(D;;;;;BG)', SDDL_REVISION_1, sa.lpSecurityDescriptor, nil) then
     SetKernelObjectSecurity(h, DACL_SECURITY_INFORMATION, sa.lpSecurityDescriptor);
+  {$ENDIF}
 end;
 
 procedure EnableWindowsSymbols(warn: boolean=true);
+{$IFDEF windows}
 var
   path: string;
   shortpath: pchar;
+{$ENDIF}
 begin
+  {$IFDEF windows}
   if (length(trim(tempdiralternative))>2) and dontusetempdir then
     path:=trim(tempdiralternative)
   else
-    path:=GetTempDir;
+  begin
+    path:=trim(GetEnvironmentVariable('_NT_SYMBOL_PATH'));
+    if path='' then
+      path:=trim(GetEnvironmentVariable('_NT_ALTERNATE_SYMBOL_PATH'));
+
+    if path='' then
+      path:=GetTempDir;
+  end;
 
   path:=path+'Cheat Engine Symbols';
 
@@ -3441,10 +3746,11 @@ begin
 
   getmem(shortpath,256);
   GetShortPathName(pchar(path),shortpath,255);
-  symhandler.setsearchpath('srv*'+shortpath+'*https://msdl.microsoft.com/download/symbols');
+  symhandler.setsearchpath('srv*'+path+'*https://msdl.microsoft.com/download/symbols');
   freemem(shortpath);
 
   symhandler.reinitialize(true);
+  {$ENDIF}
 end;
 
 
@@ -3456,11 +3762,31 @@ begin
 end;
 
 initialization
-  ownprocesshandle := OpenProcess(PROCESS_ALL_ACCESS, True, GetCurrentProcessId);
+
+  if not assigned(OpenProcess) then
+  begin
+    {$ifdef darwin}
+    OpenProcess:=@macport.OpenProcess;
+    {$endif}
+    {$ifdef windows}
+    OpenProcess:=@windows.OpenProcess;
+    {$endif}
+  end;
+
+
+  ownprocesshandle := OpenProcess(ifthen(GetSystemType<=6,$1f0fff, process_all_access), True, GetCurrentProcessId);
+
 
 
   getmem(tempdir,256);
+
+  {$ifdef windows}
   GetTempPath(256,tempdir);
+  {$else}
+
+  strcopy(tempdir, pchar(GetTempDir));
+  {$endif}
+
   GetWindir;
   keysfilemapping:=0;
 
@@ -3471,12 +3797,21 @@ initialization
   iswin2kplus:=GetSystemType>=5;
 
 
+  {$IFDEF windows}
   GetSystemInfo(@systeminfo);
+  {$ENDIF}
 
   username:=GetUserNameFromPID(GetCurrentProcessId);
 
 
   Screen.HintFont;
+
+  {$ifdef darwin}
+  systeminfo.lpMaximumApplicationAddress:=pointer($7fffffffffffffff);
+  systeminfo.lpMinimumApplicationAddress:=pointer($10000);
+  systeminfo.dwAllocationGranularity:=$10000;
+  systeminfo.dwPageSize:=$1000;
+  {$endif}
 
 
 finalization

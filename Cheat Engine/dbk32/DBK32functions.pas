@@ -4,16 +4,18 @@ unit DBK32functions;
 
 interface
 
-uses jwawindows, windows, sysutils, classes, types, registry, multicpuexecution,
+{$ifdef windows}
+uses
+  jwawindows, windows, sysutils, classes, types, registry, multicpuexecution,
   forms,dialogs, controls, maps, globals;
 
 //xp sp2
 //ThreadsProcess=220
 //ThreadListEntry=22c
 
+{$endif}
 
-
-const currentversion=2000024;
+const currentversion=2000026;
 
 const FILE_ANY_ACCESS=0;
 const FILE_SPECIAL_ACCESS=FILE_ANY_ACCESS;
@@ -144,11 +146,14 @@ const IOCTL_CE_QUERYINFORMATIONPROCESS= (IOCTL_UNKNOWN_BASE shl 16) or ($085e sh
 const IOCTL_CE_LOCK_MEMORY            = (IOCTL_UNKNOWN_BASE shl 16) or ($0860 shl 2) or (METHOD_BUFFERED ) or (FILE_RW_ACCESS shl 14);
 const IOCTL_CE_UNLOCK_MEMORY          = (IOCTL_UNKNOWN_BASE shl 16) or ($0861 shl 2) or (METHOD_BUFFERED ) or (FILE_RW_ACCESS shl 14);
 
+const IOCTL_CE_ALLOCATE_MEMORY_FOR_DBVM = (IOCTL_UNKNOWN_BASE shl 16) or ($0862 shl 2) or (METHOD_BUFFERED ) or (FILE_RW_ACCESS shl 14);
 
+{$ifdef windows}
 type TDeviceIoControl=function(hDevice: THandle; dwIoControlCode: DWORD; lpInBuffer: Pointer; nInBufferSize: DWORD; lpOutBuffer: Pointer; nOutBufferSize: DWORD; var lpBytesReturned: DWORD; lpOverlapped: POverlapped): BOOL; stdcall;
-
-
 type TFNAPCProc = TFarProc;
+{$endif}
+
+
 
 type
   TPhysicalMemoryRange=packed record
@@ -236,7 +241,7 @@ type
 
   TPRangeDynArray=array of TPRange;
 
-
+{$ifdef windows}
 var hdevice: thandle=INVALID_HANDLE_VALUE; //handle to my the device driver
     hUltimapDevice: thandle=INVALID_HANDLE_VALUE;
     handlemap: TMap;
@@ -296,8 +301,8 @@ function GetDebugportOffset: DWORD; stdcall;
 function GetThreadsProcessOffset: dword; stdcall;
 function GetThreadListEntryOffset: dword; stdcall;
 
-function ReadPhysicalMemory(hProcess:THANDLE;lpBaseAddress:pointer;lpBuffer:pointer;nSize:DWORD;var NumberOfBytesRead:DWORD):BOOL; stdcall;
-function WritePhysicalMemory(hProcess:THANDLE;lpBaseAddress:pointer;lpBuffer:pointer;nSize:DWORD;var NumberOfBytesWritten:DWORD):BOOL; stdcall;
+function ReadPhysicalMemory(hProcess:THANDLE;lpBaseAddress:pointer;lpBuffer:pointer;nSize:DWORD;var NumberOfBytesRead:PTRUINT):BOOL; stdcall;
+function WritePhysicalMemory(hProcess:THANDLE;lpBaseAddress:pointer;lpBuffer:pointer;nSize:DWORD;var NumberOfBytesWritten:PTRUINT):BOOL; stdcall;
 function GetPhysicalAddress(hProcess:THandle;lpBaseAddress:pointer;var Address:int64): BOOL; stdcall;
 function GetMemoryRanges(var ranges: TPhysicalMemoryRanges): boolean;
 function VirtualQueryExPhysical(hProcess: THandle; lpAddress: Pointer; var lpBuffer: TMemoryBasicInformation; dwLength: DWORD): DWORD; stdcall;
@@ -390,6 +395,8 @@ const IOCTL_CE_ULTIMAP2_RESUME        = (IOCTL_UNKNOWN_BASE shl 16) or ($0855 sh
 procedure dbk_test;
 
 procedure LaunchDBVM(cpuid: integer); stdcall;
+procedure allocateMemoryForDBVM(pagecount: QWORD);
+
 
 function GetGDT(limit: pword):ptruint; stdcall;
 
@@ -419,8 +426,11 @@ var kernel32dll: thandle;
     IsWow64Process: TIsWow64Process;
     failedduetodriversigning: boolean;
 
+{$endif}
+
 implementation
 
+{$ifdef windows}
 uses vmxfunctions, DBK64SecondaryLoader, NewKernelHandler, frmDriverLoadedUnit, CEFuncProc, Parsers;
 
 resourcestring
@@ -565,6 +575,8 @@ begin
     inp.KernelMode:=1
   else
     inp.KernelMode:=0;
+
+  OutputDebugString(format('logUserMode=%d logKernelMode=%d', [inp.UserMode, inp.KernelMode]));
 
   for i:=0 to inp.rangecount-1 do
   begin
@@ -901,6 +913,18 @@ begin
       handlemapmrew.Endread;
     end;
   end;
+
+  if (not result) and (isRunningDBVM) then
+  begin
+    _cr3:=dbvm_findCR3(hProcess);
+
+    if _cr3<>0 then
+    begin
+      CR3:=_cr3;
+      result:=true;
+    end;
+
+  end;
 end;
 
 function GetCR3FromPID(pid: system.QWORD;var CR3:system.QWORD):BOOL; stdcall;
@@ -1076,6 +1100,11 @@ var cc: dword;
     physicaladdress: int64 absolute input;
     x: dword;
     l: THandleListEntry;
+
+    b: byte;
+
+    CR3: qword;
+    pa: qword;
 begin
   result:=false;
   if hdevice<>INVALID_HANDLE_VALUE then
@@ -1097,6 +1126,19 @@ begin
     finally
       handlemapmrew.Endread;
     end;
+  end;
+
+  if (not result) and (isRunningDBVM) then
+  begin
+    cr3:=dbvm_findCR3(hProcess);
+
+    if cr3<>0 then
+    begin
+      result:=VirtualToPhysicalCR3(cr3,qword(lpBaseAddress), pa);
+      if result then
+        address:=pa;
+    end;
+
   end;
 end;
 
@@ -1276,7 +1318,7 @@ begin
 end;
 
 
-function WritePhysicalMemory(hProcess:THANDLE;lpBaseAddress:pointer;lpBuffer:pointer;nSize:DWORD;var NumberOfBytesWritten:DWORD):BOOL; stdcall;
+function WritePhysicalMemory(hProcess:THANDLE;lpBaseAddress:pointer;lpBuffer:pointer;nSize:DWORD;var NumberOfBytesWritten:PTRUINT):BOOL; stdcall;
 type TInputstruct=record
   startaddress: uint64;
   bytestowrite: uint64;
@@ -1336,7 +1378,7 @@ begin
 end;
 
 
-function ReadPhysicalMemory(hProcess:THANDLE;lpBaseAddress:pointer;lpBuffer:pointer;nSize:DWORD;var NumberOfBytesRead:DWORD):BOOL; stdcall;
+function ReadPhysicalMemory(hProcess:THANDLE;lpBaseAddress:pointer;lpBuffer:pointer;nSize:DWORD;var NumberOfBytesRead:PTRUINT):BOOL; stdcall;
 type TInputstruct=packed record
   startaddress: qword;
   bytestoread: qword;
@@ -1357,6 +1399,8 @@ begin
     numberofbytesread:=dbvm_read_physical_memory(qword(lpBaseAddress), lpBuffer, nSize);
     exit(numberofbytesread=nSize);
   end;
+
+  OutputDebugString('Using normal dbk method');
 
   result:=false;
   numberofbytesread:=0;
@@ -1889,7 +1933,7 @@ begin
   //OutputDebugString('NtOpenProcess hook');
   if ((hdevice<>INVALID_HANDLE_VALUE) and (clientid<>nil)) and (clientid^.processid<>GetCurrentProcessId) then
   begin
-    h:=OP(process_all_access,true,clientid^.processid);
+    h:=OP(ifthen<dword>(GetSystemType<=6,$1f0fff, process_all_access),true,clientid^.processid);
     if h<>0 then
     begin
       result:=0;
@@ -2428,6 +2472,7 @@ begin
     if deviceiocontrol(hdevice,cc,@input,sizeof(input),@output,sizeof(output),cc,nil) then
       result:=output.mdl;
   end;
+
 end;
 
 procedure UnlockMemory(MDLAddress: QWORD);
@@ -2667,7 +2712,7 @@ begin
   if (hdevice<>INVALID_HANDLE_VALUE) then
   begin
     cc:=IOCTL_CE_READMSR;
-    OutputDebugString(pchar('dbk32functions.pas: Reading from msr '+inttohex(msr,1)));
+    //OutputDebugString(pchar('dbk32functions.pas: Reading from msr '+inttohex(msr,1)));
     if deviceiocontrol(hdevice,cc,@msr,sizeof(msr),@msrvalue,sizeof(msrvalue),cc,nil) then
       result:=msrvalue
     else
@@ -2840,6 +2885,11 @@ begin
   end;
 end;
 
+procedure allocateMemoryForDBVM(pagecount: qword);
+var br: dword;
+begin
+  if hdevice<>INVALID_HANDLE_VALUE then deviceiocontrol(hdevice,IOCTL_CE_ALLOCATE_MEMORY_FOR_DBVM,@pagecount,sizeof(pagecount),nil,0,br,nil);
+end;
 
 function RewriteKernel32:boolean; stdcall;
 begin
@@ -2982,7 +3032,7 @@ begin
       result:=true;
       SDTShadow:=res;
     end;
-    ownprocess:=OP(PROCESS_ALL_ACCESS,false,getcurrentprocessid);
+    ownprocess:=OP(ifthen<dword>(GetSystemType<=6,$1f0fff, process_all_access),false,getcurrentprocessid);
   end;
 end;
 
@@ -3434,4 +3484,5 @@ begin
   freeandnil(handlemap);
   freeandnil(handlemapmrew);
 end;
+{$endif}
 end.

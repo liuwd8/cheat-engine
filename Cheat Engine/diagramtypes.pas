@@ -5,7 +5,7 @@ unit diagramtypes;
 interface
 
 uses
-  Classes, SysUtils, Graphics, Controls;
+  Classes, SysUtils, Graphics, Controls{$ifdef windows}, GL{$endif};
 
 type
   TDiagramBlockSide=(dbsTop, dbsLeft, dbsRight, dbsBottom, dbsTopLeft, dbsTopRight, dbsBottomLeft, dbsBottomRight);
@@ -29,6 +29,21 @@ type
     BlockBackground: tcolor;
 
     arrowStyles: TArrowStyles;
+    arrowSize: integer;
+    scrollx, scrolly, maxscrollx, maxscrolly: integer;
+    zoom: single;
+
+    {$ifdef windows}
+    UseOpenGL: boolean;
+    {$endif}
+    CanUsebuffers: boolean;
+
+
+    {$ifdef windows}
+    plotpointvertexbuf: GLint;
+    plotpointindexbuf: GLint;
+    {$endif}
+
 
     constructor create(_owner: TCustomControl);
   end;
@@ -46,6 +61,8 @@ begin
   backgroundcolor:=clGreen;
   drawPlotPoints:=true;
   BlockBackground:=$d0d0d0;
+
+  arrowsize:=5;
 
   blockTextColorNoMarkup:=clBlack;
 end;

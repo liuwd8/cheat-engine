@@ -8,10 +8,17 @@ interface
 uses
   Windows, forms, graphics, Classes, SysUtils, controls, stdctrls, comctrls,symbolhandler,
   cefuncproc,newkernelhandler, hotkeyhandler, dom, XMLRead,XMLWrite,
-  customtypehandler, fileutil, LCLProc, commonTypeDefs, pointerparser, LazUTF8, LuaClass;
+  customtypehandler, fileutil, LCLProc, commonTypeDefs, pointerparser, LazUTF8, LuaClass, math;
 {$endif}
 
-{$ifdef unix}
+{$ifdef darwin}
+uses
+  macport, forms, graphics, Classes, SysUtils, controls, stdctrls, comctrls,symbolhandler,
+  cefuncproc,newkernelhandler, hotkeyhandler, dom, XMLRead,XMLWrite,
+  CustomTypeHandler, fileutil, LCLProc, commonTypeDefs, pointerparser, LazUTF8, LuaClass, math;
+{$endif}
+
+{$ifdef jni}
 //only used as a class to store entries and freeze/setvalue. It won't have a link with the addresslist and does not decide it's position
 uses
   unixporthelper, Classes, sysutils, symbolhandler, NewKernelHandler, DOM,
@@ -31,13 +38,14 @@ resourcestring
   rsSetValue = 'Set Value';
   rsIncreaseValue = 'Increase Value';
   rsDecreaseValue = 'Decrease Value';
+  rsAdjustMRwithRelativeAddress = 'Do you wish to adjust memory records with relative addresses as well?';
 type TMemrecHotkeyAction=(mrhToggleActivation=0, mrhToggleActivationAllowIncrease=1, mrhToggleActivationAllowDecrease=2, mrhActivate=3, mrhDeactivate=4, mrhSetValue=5, mrhIncreaseValue=6, mrhDecreaseValue=7);
 
 type TFreezeType=(ftFrozen, ftAllowIncrease, ftAllowDecrease);
 
 
 
-type TMemrecOption=(moHideChildren, moActivateChildrenAsWell, moDeactivateChildrenAsWell, moRecursiveSetValue, moAllowManualCollapseAndExpand, moManualExpandCollapse);
+type TMemrecOption=(moHideChildren, moActivateChildrenAsWell, moDeactivateChildrenAsWell, moRecursiveSetValue, moAllowManualCollapseAndExpand, moManualExpandCollapse, moAlwaysHideChildren);
 type TMemrecOptions=set of TMemrecOption;
 
 type TMemrecStringData=record
@@ -155,9 +163,10 @@ type
     fShowAsHex: boolean;
     editcount: integer; //=0 when not being edited
 
+    fDescription : string;
     fOptions: TMemrecOptions;
 
-    CustomType: TCustomType;
+    fCustomType: TCustomType;
     fCustomTypeName: string;
     fColor: TColor;
     fVisible: boolean;
@@ -170,6 +179,7 @@ type
 
     Hotkeylist: tlist;
     fisGroupHeader: Boolean; //set if it's a groupheader, only the description matters then
+    fisAddressGroupHeader: Boolean; // AddressGroupHeader is a special case of GroupHeader
     fIsReadableAddress: boolean;
 
     fDropDownList: Tstringlist;
@@ -179,6 +189,7 @@ type
 
     fDropDownLinked: boolean;
     fDropDownLinkedMemrec: string;
+
     linkedDropDownMemrec: TMemoryRecord;
     memrecsLinkedToMe: array of TMemoryRecord; // a list of all memrecs linked to this memrec
 
@@ -219,6 +230,7 @@ type
     function getHotkey(index: integer): TMemoryRecordHotkey;
     function GetshowAsSigned: boolean;
     procedure setShowAsSigned(state: boolean);
+    procedure setAddressGroupHeader(state: boolean);
 
 
     function getChildCount: integer;
@@ -238,6 +250,7 @@ type
     function getDropDownDescriptionOnly: boolean;
     function getDisplayAsDropDownListItem: boolean;
 
+    function hasMouseOver: boolean;
     procedure setDropDownLinkedMemrec(s: string);
 
 
@@ -245,12 +258,14 @@ type
     procedure SetCollapsed(state: boolean);
 
     procedure processingDone; //called by the processingThread when finished
+    procedure setDescription(d: string);
+
   public
 
 
 
 
-    Description : string;
+
     interpretableaddress: string;
 
 
@@ -259,7 +274,7 @@ type
     Extra: TMemRecExtraData;
     AutoAssemblerData: TMemRecAutoAssemblerData;
 
-    {$ifndef unix}
+    {$ifndef jni}
     treenode: TTreenode;
     autoAssembleWindow: TForm; //window storage for an auto assembler editor window
     {$endif}
@@ -276,6 +291,8 @@ type
     function hasSelectedParent: boolean;
     function hasParent: boolean;
 
+    procedure appendToEntry(memrec: TMemoryrecord);
+
 
     function isBeingEdited: boolean;
     procedure beginEdit;
@@ -289,6 +306,7 @@ type
 
     function GetDisplayValue: string;
     function GetValue: string;
+
     procedure SetValue(v: string); overload;
     procedure SetValue(v: string; isFreezer: boolean); overload;
     procedure UndoSetValue;
@@ -328,6 +346,9 @@ type
     function getlinkedDropDownMemrec: TMemoryRecord;
     function getlinkedDropDownMemrec_LoopDetected: boolean;
 
+    procedure replaceDescription(replace_find, replace_with: string; childrenaswell: boolean);
+    procedure adjustAddressby(offset, pointerlastoffset: int64; childrenaswell: boolean; relativeaswell: boolean=false);
+
     constructor Create(AOwner: TObject);
     destructor destroy; override;
 
@@ -339,10 +360,9 @@ type
 
     property Child[index: integer]: TMemoryRecord read getChild; default;
     property offsets[index: integer]: TMemrecOffset read getPointerOffset;
-
-
   published
     property IsGroupHeader: boolean read fisGroupHeader write fisGroupHeader;
+    property IsAddressGroupHeader: boolean read fisAddressGroupHeader write setAddressGroupHeader;
     property IsReadableAddress: boolean read fIsReadableAddress; //gets set by getValue, so at least read the value once
     property IsReadable: boolean read fIsReadableAddress;
     property ID: integer read fID write setID;
@@ -354,6 +374,7 @@ type
     property Active: boolean read fActive write setActive;
     property VarType: TVariableType read fVarType write setVarType;
     property CustomTypeName: string read fCustomTypeName write setCustomTypeName;
+    property CustomType: TCustomType read fCustomType;
     property Value: string read GetValue write SetValue;
     property DisplayValue: string read GetDisplayValue;
     property DontSave: boolean read fDontSave write fDontSave;
@@ -372,7 +393,7 @@ type
     property DropDownCount: integer read getDropDownCount;
     property DropDownValue[index:integer]: string read getDropDownValue;
     property DropDownDescription[index:integer]: string read getDropDownDescription;
-    property Parent: TMemoryRecord read getParent;
+    property Parent: TMemoryRecord read getParent write appendToEntry;
     property OnActivate: TMemoryRecordActivateEvent read fOnActivate write fOnActivate;
     property OnDeactivate: TMemoryRecordActivateEvent read fOnDeActivate write fOndeactivate;
     property OnDestroy: TNotifyEvent read fOnDestroy write fOnDestroy;
@@ -385,6 +406,9 @@ type
 
     property LastAAExecutionFailed: boolean read AutoAssemblerData.lastExecutionFailed;
     property LastAAExecutionFailedReason: string read AutoAssemblerData.lastExecutionFailedReason;
+    property Description: string read fDescription write setDescription;
+    property CachedAddress: ptruint read realAddress;
+    property HasMouseFocus: boolean read hasMouseOver;
   end;
 
   THKSoundFlag=(hksPlaySound=0, hksSpeakText=1, hksSpeakTextEnglish=2); //playSound excludes speakText
@@ -411,6 +435,7 @@ type
     procedure playDeactivateSound;
 
     procedure doHotkey;
+    procedure registerKeys;
     constructor create(AnOwner: TMemoryRecord);
     destructor destroy; override;
   published
@@ -443,14 +468,15 @@ function TextToMemRecHotkeyAction(text: string): TMemrecHotkeyAction;
 
 implementation
 
-{$ifdef windows}
-uses mainunit, addresslist, formsettingsunit, LuaHandler, lua, lauxlib, lualib,
-  processhandlerunit, Parsers, winsapi,autoassembler, globals;
+
+
+{$ifdef jni}
+uses processhandlerunit, Parsers;
+{$else}
+uses mainunit, addresslist, formsettingsunit, LuaHandler, lua, lauxlib, lualib, Contnrs,
+  processhandlerunit, Parsers, {$ifdef windows}winsapi,{$endif}autoassembler, globals{$ifdef windows}, cheatecoins{$endif};
 {$endif}
 
-{$ifdef unix}
-uses processhandlerunit, Parsers;
-{$endif}
 
 {---------------------TMemoryRecordProcessingThread-------------------------}
 procedure TMemoryRecordProcessingThread.Execute;
@@ -625,6 +651,8 @@ begin
     foffset:=symhandler.getAddressFromNameShallow(s, false, e);
     if not e then
     begin
+      special:=true;
+
       funparsed:=false;
       exit;
     end;
@@ -691,18 +719,12 @@ begin
   fowner.hotkeylist.Add(self);
 
   keys[0]:=0;
-{$ifdef windows}
-  RegisterHotKey2(mainform.handle, 0, keys, self);
-{$endif}
 
 end;
 
 destructor TMemoryRecordHotkey.destroy;
 begin
-{$ifdef windows}
   UnregisterAddressHotkey(self);
-{$endif}
-
 
   //remove this hotkey from the memoryrecord
   if owner<>nil then
@@ -713,6 +735,12 @@ begin
   end;
 
   inherited destroy;
+end;
+
+procedure TMemoryRecordHotkey.registerKeys;
+begin
+  UnregisterAddressHotkey(self);
+  RegisterHotKey2(mainform.handle, -1, keys, self);
 end;
 
 procedure TMemoryRecordHotkey.doHotkey;
@@ -738,6 +766,9 @@ begin
       s:=ActivateSound;
       s:=StringReplace(s,'{MRDescription}', fowner.Description,[rfIgnoreCase, rfReplaceAll]);
       s:=StringReplace(s,'{Description}', Description, [rfIgnoreCase, rfReplaceAll]);
+
+      s:=StringReplace(s,'{MRValue}', fowner.Value,[rfIgnoreCase, rfReplaceAll]);
+      s:=StringReplace(s,'{Value}', Value, [rfIgnoreCase, rfReplaceAll]);
 
 
 
@@ -765,6 +796,9 @@ begin
       s:=StringReplace(s,'{MRDescription}', fowner.Description,[rfIgnoreCase, rfReplaceAll]);
       s:=StringReplace(s,'{Description}', Description, [rfIgnoreCase, rfReplaceAll]);
 
+      s:=StringReplace(s,'{MRValue}', fowner.Value,[rfIgnoreCase, rfReplaceAll]);
+      s:=StringReplace(s,'{Value}', Value, [rfIgnoreCase, rfReplaceAll]);
+
       if DeactivateSoundFlag=hksSpeakTextEnglish then
         speak('<voice required="Language=409">'+s+'</voice>')
       else
@@ -778,17 +812,22 @@ end;
 
 
 {---------------------------------MemoryRecord---------------------------------}
+procedure TMemoryRecord.SetAddressGroupHeader(state: boolean);
+begin
+  fisGroupHeader:=true;
+  fisAddressGroupHeader:=state;
+end;
 
 function TMemoryRecord.GetCollapsed: boolean;
 begin
-  {$ifndef unix}
+  {$ifndef jni}
   result:=not treenode.Expanded;
   {$endif}
 end;
 
 procedure TMemoryRecord.SetCollapsed(state: boolean);
 begin
-  {$ifndef unix}
+  {$ifndef jni}
   if state then
     treenode.Collapse(false)
   else
@@ -879,13 +918,14 @@ begin
       exit(-1);
   end;
 
-
   result:=-1;
   for i:=0 to DropDownCount-1 do
   begin
     if lowercase(Value)=lowercase(DropDownValue[i]) then
       result:=i;
   end;
+
+
 end;
 
 function TMemoryRecord.getDropDownReadOnly: boolean;
@@ -937,7 +977,7 @@ end;
 function TMemoryRecord.getChildCount: integer;
 begin
   result:=0;
-  {$ifndef unix}
+  {$ifndef jni}
   if treenode<>nil then
     result:=treenode.Count;
   {$endif}
@@ -946,12 +986,83 @@ end;
 function TMemoryRecord.getChild(index: integer): TMemoryRecord;
 begin
 
-  {$IFNDEF UNIX}
+  {$IFNDEF jni}
   if index<Count then
     result:=TMemoryRecord(treenode.Items[index].Data)
   else
   {$ENDIF}
     result:=nil;
+end;
+
+procedure TMemoryRecord.replaceDescription(replace_find, replace_with: string; childrenaswell: boolean);
+var i: integer;
+begin
+  if replace_find='' then exit;
+  Description:=stringreplace(Description,replace_find,replace_with,[rfReplaceAll,rfIgnoreCase]);
+  if childrenaswell then
+  begin
+    for i:=0 to Count-1 do
+      Child[i].replaceDescription(replace_find, replace_with, childrenaswell);
+  end;
+end;
+
+procedure TMemoryRecord.adjustAddressby(offset, pointerlastoffset: int64; childrenaswell: boolean; relativeaswell: boolean=false);
+var
+  s: string;
+  x: ptruint;
+  i: integer;
+  appendText: boolean = false;
+begin
+  if (offset=0) and (pointerlastoffset=0) then exit;
+
+  if (offset<>0) and (interpretableaddress<>'') then
+  begin
+      s:=trim(interpretableaddress);
+      if s<>'' then
+      begin
+        if not (s[1] in ['-', '+']) then
+        begin
+          try
+            x:=symhandler.getAddressFromName(interpretableaddress);
+            x:=x+offset;
+            interpretableaddress:=symhandler.getNameFromAddress(x,true,true, false);
+          except
+            if getBaseAddress<>0 then
+              interpretableaddress:=inttohex(getBaseAddress+offset,8)
+            else
+              appendText:=true;
+          end;
+        end
+        else if relativeaswell then // relative address
+        begin
+          try
+            x:=symhandler.getAddressFromName(interpretableaddress);
+            x:=x+offset;
+            interpretableaddress:=IntToHexSignedWithPlus(int64(x),1);
+          except
+            appendText:=true;
+          end;
+        end;
+      end;
+
+      if appendText then
+        interpretableaddress:=interpretableaddress+IntToHexSignedWithPlus(offset,1); // append text
+
+    ReinterpretAddress;
+  end;
+
+  if (pointerlastoffset<>0) and isPointer then
+    try
+      x:=symhandler.getAddressFromName(offsets[0].offsetText);
+      x:=x+pointerlastoffset;
+      offsets[0].offsetText:=IntToHexSigned(int64(x),1);
+    except
+      offsets[0].offsetText:=offsets[0].offsetText+IntToHexSignedWithPlus(pointerlastoffset,1); // append text
+    end;
+
+  if childrenaswell then
+    for i:=0 to count-1 do
+      Child[i].adjustAddressby(offset, pointerlastoffset, childrenaswell, relativeaswell);
 end;
 
 function TMemoryRecord.getHotkeyCount: integer;
@@ -979,7 +1090,7 @@ end;
 
 function TMemoryRecord.getLuaRef: integer;
 begin
-  {$ifndef unix}
+  {$ifndef jni}
   if luaref=-1 then
   begin
     luaclass_newClass(luavm, self);
@@ -1010,6 +1121,8 @@ end;
 destructor TMemoryRecord.destroy;
 var i: integer;
 begin
+  taddresslist(fowner).MemrecDescriptionChange(self, fdescription,'');
+
   if processingThread<>nil then
   begin
     processingThread.Terminate;
@@ -1054,7 +1167,7 @@ begin
     autoassemblerdata.registeredsymbols.free;
 
   //free the group's children
-  {$IFNDEF UNIX}
+  {$IFNDEF JNI}
   while (treenode.count>0) do
     TMemoryRecord(treenode[0].data).free;
 
@@ -1065,7 +1178,7 @@ begin
 
   if fDropDownList<>nil then
     freeandnil(fDropDownList);
-  {$ifndef unix}
+  {$ifndef jni}
   if luaref<>-1 then
     luaL_unref(LuaVM, LUA_REGISTRYINDEX, luaref);
   {$endif}
@@ -1079,8 +1192,8 @@ end;
 procedure TMemoryRecord.SetVisibleChildrenState;
 {Called when options change and when children are assigned}
 begin
-  {$IFNDEF UNIX}
-  if (not factive) and (moHideChildren in foptions) then
+  {$IFNDEF jni}
+  if ((not factive) and (moHideChildren in foptions)) or (moAlwaysHideChildren in fOptions) then
     treenode.Collapse(true)
   else
     treenode.Expand(true);
@@ -1088,8 +1201,18 @@ begin
 end;
 
 procedure TMemoryRecord.setOptions(newOptions: TMemrecOptions);
+var oldoptions: TMemrecOptions;
 begin
+  oldoptions:=foptions;
+
+  if (moHideChildren in options) and (moAlwaysHideChildren in newOptions) then //mutually exclusive
+    newOptions:=newOptions-[moHideChildren];
+
+  if (moAlwaysHideChildren in options) and (moHideChildren in newOptions) then
+    newoptions:=newoptions-[moAlwaysHideChildren];
+
   foptions:=newOptions;
+
   //apply changes (moHideChildren, moBindActivation, moRecursiveSetValue)
   SetVisibleChildrenState;
 
@@ -1149,7 +1272,7 @@ end;
 procedure TMemoryRecord.setColor(c: TColor);
 begin
   fColor:=c;
-  {$IFNDEF UNIX}
+  {$IFNDEF jni}
   TAddresslist(fOwner).Update;
   {$ENDIF}
 
@@ -1166,7 +1289,7 @@ var
   memrec: TMemoryRecord;
   a:TDOMNode;
 begin
-  {$IFNDEF UNIX}
+  {$IFNDEF jni}
   if TDOMElement(CheatEntry).TagName<>'CheatEntry' then exit; //invalid node type
 
   tempnode:=Cheatentry.FindNode('ID');
@@ -1218,6 +1341,9 @@ begin
       if (a<>nil) and (a.TextContent='1') then
         foptions:=foptions+[moManualExpandCollapse];
 
+      a:=tempnode.Attributes.GetNamedItem('moAlwaysHideChildren');
+      if (a<>nil) and (a.TextContent='1') then
+          foptions:=foptions+[moAlwaysHideChildren];
     end;
   end;
 
@@ -1301,8 +1427,6 @@ begin
 
   treenode.Expand(true);
 
-
-
   begin
     tempnode:=CheatEntry.FindNode('VariableType');
     if tempnode<>nil then
@@ -1382,7 +1506,10 @@ begin
 
     tempnode:=CheatEntry.FindNode('Address');
     if tempnode<>nil then
+    begin
       interpretableaddress:=tempnode.TextContent;
+      fisAddressGroupHeader:=fisGroupHeader;
+    end;
 
 
     tempnode:=CheatEntry.FindNode('Offsets');
@@ -1506,6 +1633,8 @@ begin
             end;
 
           end;
+
+          hk.registerKeys;
         end;
       end;
 
@@ -1525,12 +1654,20 @@ begin
 
 end;
 
+
+procedure TMemoryRecord.appendToEntry(memrec: TMemoryrecord);
+begin
+  treenode.MoveTo(memrec.treenode, naAddChild);
+  memrec.SetVisibleChildrenState;
+end;
+
+
 function TMemoryRecord.getParent: TMemoryRecord;
-{$IFNDEF UNIX}
+{$IFNDEF jni}
 var tn: TTreenode;
 {$ENDIF}
 begin
-  {$IFNDEF UNIX}
+  {$IFNDEF jni}
   result:=nil;
   tn:=treenode.parent;
   if tn<>nil then
@@ -1540,19 +1677,19 @@ end;
 
 function TMemoryRecord.hasParent: boolean;
 begin
-  {$IFNDEF UNIX}
+  {$IFNDEF jni}
   result:=(treenode<>nil) and (treenode.parent<>nil);
   {$ENDIF}
 end;
 
 function TMemoryRecord.hasSelectedParent: boolean;
-{$IFNDEF UNIX}
+{$IFNDEF jni}
 var tn: TTreenode;
   m: TMemoryRecord;
 {$ENDIF}
 begin
   //if this node has a direct parent that is selected it returns true, else it will ask the parent if that one has a selected parent etc... untill there is no more parent, or one is selected
-  {$IFNDEF UNIX}
+  {$IFNDEF jni}
   result:=false;
   tn:=treenode.Parent;
   if tn<>nil then
@@ -1567,7 +1704,7 @@ begin
 end;
 
 procedure TMemoryRecord.getXMLNode(node: TDOMNode; selectedOnly: boolean);
-{$IFNDEF UNIX}
+{$IFNDEF jni}
 var
   doc: TDOMDocument=nil;
   cheatEntry: TDOMNode=nil;
@@ -1588,9 +1725,46 @@ var
 
   ddl: TDOMNode=nil;
   offset: TDOMNode=nil;
+
+  procedure AddressAndOffsets();
+  var i: integer;
+  begin
+    cheatEntry.AppendChild(doc.CreateElement('Address')).TextContent:=interpretableaddress;
+
+    if isPointer then
+    begin
+      Offsets:=cheatEntry.AppendChild(doc.CreateElement('Offsets'));
+
+      for i:=0 to offsetCount-1 do
+      begin
+        offset:=Offsets.AppendChild(doc.CreateElement('Offset'));
+        offset.TextContent:=fpointeroffsets[i].offsetText;
+
+        if fpointeroffsets[i].OnlyUpdateAfterInterval then
+        begin
+          a:=doc.CreateAttribute('Interval');
+          a.TextContent:=inttostr(fpointeroffsets[i].UpdateInterval);
+          offset.Attributes.SetNamedItem(a);
+
+
+        end;
+
+        if fpointeroffsets[i].OnlyUpdateWithReinterpret then
+        begin
+          a:=doc.CreateAttribute('UpdateOnFullRefresh');
+          a.TextContent:='1';
+          offset.Attributes.SetNamedItem(a);
+        end;
+
+
+      end;
+
+      cheatEntry.AppendChild(Offsets);
+    end;
+  end;
 {$ENDIF}
 begin
-  {$IFNDEF UNIX}
+  {$IFNDEF JNI}
   if selectedonly then
   begin
     if (not isselected) then exit; //don't add if not selected and only the selected items should be added
@@ -1655,6 +1829,13 @@ begin
     if moManualExpandCollapse in options then
     begin
       a:=doc.CreateAttribute('moManualExpandCollapse');
+      a.TextContent:='1';
+      opt.Attributes.SetNamedItem(a);
+    end;
+
+    if moAlwaysHideChildren in options then
+    begin
+      a:=doc.CreateAttribute('moAlwaysHideChildren');
       a.TextContent:='1';
       opt.Attributes.SetNamedItem(a);
     end;
@@ -1738,6 +1919,7 @@ begin
   if fisGroupHeader then
   begin
     cheatEntry.AppendChild(doc.CreateElement('GroupHeader')).TextContent:='1';
+    if fisAddressGroupHeader then AddressAndOffsets;
   end
   else
   begin
@@ -1783,43 +1965,7 @@ begin
       end;
     end;
 
-    if VarType<>vtAutoAssembler then
-    begin
-      cheatEntry.AppendChild(doc.CreateElement('Address')).TextContent:=interpretableaddress;
-
-      if isPointer then
-      begin
-        Offsets:=cheatEntry.AppendChild(doc.CreateElement('Offsets'));
-
-        for i:=0 to offsetCount-1 do
-        begin
-          offset:=Offsets.AppendChild(doc.CreateElement('Offset'));
-          offset.TextContent:=fpointeroffsets[i].offsetText;
-
-          if fpointeroffsets[i].OnlyUpdateAfterInterval then
-          begin
-            a:=doc.CreateAttribute('Interval');
-            a.TextContent:=inttostr(fpointeroffsets[i].UpdateInterval);
-            offset.Attributes.SetNamedItem(a);
-
-
-          end;
-
-          if fpointeroffsets[i].OnlyUpdateWithReinterpret then
-          begin
-            a:=doc.CreateAttribute('UpdateOnFullRefresh');
-            a.TextContent:='1';
-            offset.Attributes.SetNamedItem(a);
-          end;
-
-
-        end;
-
-        cheatEntry.AppendChild(Offsets);
-      end;
-    end;
-
-
+    if VarType<>vtAutoAssembler then AddressAndOffsets;
   end;
 
   //hotkeys
@@ -1908,7 +2054,7 @@ end;
 
 procedure TMemoryRecord.refresh;
 begin
-{$IFNDEF UNIX}   treenode.Update;   {$ENDIF}
+{$IFNDEF jni}   treenode.Update;   {$ENDIF}
 end;
 
 
@@ -1921,7 +2067,7 @@ end;
 
 function TMemoryRecord.GetShowAsSigned: boolean;
 begin
-  {$IFNDEF UNIX}
+  {$IFNDEF jni}
   if fShowAsSignedOverride then
     result:=fShowAsSigned
   else
@@ -1998,18 +2144,18 @@ end;
 
 function TMemoryRecord.getIndex: integer;
 begin
-  {$IFNDEF UNIX}
+  {$IFNDEF jni}
   result:=treenode.AbsoluteIndex;
   {$ENDIF}
 end;
 
 procedure TMemoryRecord.setID(i: integer);
-{$IFNDEF UNIX}
+{$IFNDEF jni}
 var a: TAddresslist;
 {$ENDIF}
 
 begin
-  {$IFNDEF UNIX}
+  {$IFNDEF jni}
   if i<>fid then
   begin
     //new id, check fo duplicates (e.g copy/paste)
@@ -2058,6 +2204,7 @@ begin
   hk.action:=action;
   hk.value:=value;
   hk.fdescription:=description;
+  hk.RegisterKeys;
 
   result:=hk;
 end;
@@ -2140,7 +2287,7 @@ end;
 
 procedure TMemoryRecord.disablewithoutexecute;
 begin
-  {$IFNDEF UNIX}
+  {$IFNDEF jni}
   factive:=false;
   SetVisibleChildrenState;
   treenode.Update;
@@ -2252,7 +2399,7 @@ begin
     end;
   end;
 
-  {$IFNDEF UNIX}
+  {$IFNDEF jni}
   treenode.update;
   {$ENDIF}
 end;
@@ -2263,7 +2410,7 @@ begin
   if state then
     fAllowIncrease:=false; //at least one of the 2 must always be false
 
-  {$IFNDEF UNIX}
+  {$IFNDEF jni}
   treenode.update;
   {$ENDIF}
 end;
@@ -2274,7 +2421,7 @@ begin
   if state then
     fAllowDecrease:=false; //at least one of the 2 must always be false
 
-  {$IFNDEF UNIX}
+  {$IFNDEF jni}
   treenode.update;
   {$ENDIF}
 end;
@@ -2292,6 +2439,11 @@ begin
     result:=0;
 end;
 
+function TMemoryRecord.hasMouseOver: boolean;
+begin
+  result:=taddresslist(fowner).MouseHighlightedRecord=self;
+end;
+
 procedure TMemoryRecord.processingDone;
 //called after an aa script has finished processing
 var i: integer;
@@ -2306,11 +2458,11 @@ begin
   if processingThread<>nil then
     freeandnil(processingThread);
 
-  {$IFNDEF UNIX}
+  {$IFNDEF jni}
   treenode.update;
   {$ENDIF}
 
-  {$IFNDEF UNIX}
+  {$IFNDEF jni}
   if active and (moActivateChildrenAsWell in options) then
   begin
     //apply this state to all the children
@@ -2322,7 +2474,7 @@ begin
   {$ENDIF}
 
   //6.5+
-{$ifndef unix}
+{$ifndef jni}
   LUA_functioncall('onMemRecPostExecute',[self, wantedstate, fActive=wantedstate]);
 {$endif}
 
@@ -2350,6 +2502,10 @@ var f: string;
 
     p: boolean;
 begin
+  {$ifdef windows}
+  if state and aprilfools then decreaseCheatECoinCount;
+  {$endif}
+
   if state=fActive then exit; //no need to execute this is it's the same state
   if processingThread<>nil then exit; //don't change the state while processing
 
@@ -2365,7 +2521,7 @@ begin
 }
 
   //6.5+
-  {$ifndef unix}
+  {$ifndef jni}
   LUA_functioncall('onMemRecPreExecute',[self, state]);
   {$endif}
 
@@ -2416,7 +2572,7 @@ begin
   begin
     if self.VarType = vtAutoAssembler then
     begin
-      {$IFNDEF UNIX}
+      {$IFNDEF jni}
       //aa script
       if autoassemblerdata.registeredsymbols=nil then
         autoassemblerdata.registeredsymbols:=tstringlist.create;
@@ -2498,10 +2654,16 @@ begin
   processingDone;
 end;
 
+procedure TMemoryRecord.setDescription(d: string);
+begin
+  TAddresslist(fowner).MemrecDescriptionChange(self, fdescription, d);
+  fdescription:=d;
+end;
+
 procedure TMemoryRecord.setVisible(state: boolean);
 begin
   fVisible:=state;
-  {$IFNDEF UNIX}
+  {$IFNDEF jni}
   if treenode<>nil then
     treenode.update;
   {$ENDIF}
@@ -2538,7 +2700,7 @@ begin
   end;
 
   fShowAsHex:=state;
-  {$IFNDEF UNIX}
+  {$IFNDEF jni}
   if treenode<>nil then
     treenode.Update;
   {$ENDIF}
@@ -2573,7 +2735,7 @@ end;
 procedure TMemoryRecord.RefreshCustomType;
 begin
   if vartype=vtCustom then
-    CustomType:=GetCustomTypeFromName(fCustomTypeName);
+    fCustomType:=GetCustomTypeFromName(fCustomTypeName);
 end;
 
 function TMemoryRecord.ReinterpretAddress(forceremovalofoldaddress: boolean=false): boolean;
@@ -2727,29 +2889,47 @@ function TMemoryRecord.GetDisplayValue: string;
 var
   i: integer;
   c: integer;
+  found: boolean;
+  hasNotFoundResult: boolean;
+  notfoundresult: string;
 begin
   result:=getValue;
   if assigned(fOnGetDisplayValue) and fOnGetDisplayValue(self, result) then exit;
 
   c:=DropDowncount;
 
+
   if getDisplayAsDropDownListItem and (c>0) then
   begin
+    notfoundresult:='';
+    found:=false;
+    hasNotFoundResult:=false;
+
     //convert the value to a dropdown list item value
     for i:=0 to c-1 do
     begin
+      if DropDownReadOnly and DropDownDescriptionOnly and DisplayAsDropDownListItem and (DropDownValue[i]='*') then
+      begin
+        hasNotFoundResult:=true;
+        notfoundresult:=DropDownDescription[i];
+      end;
+
       if uppercase(utf8toansi(DropDownValue[i]))=uppercase(result) then
       begin
+        found:=true;
         if getDropDownDescriptionOnly then
           result:=utf8toansi(DropDownDescription[i])
         else
           result:=result+' : '+utf8toansi(DropDownDescription[i]);
       end;
 
-      //still here. The value couldn't be found in the list , so just display the value
     end;
+
+    if (not found) and DropDownReadOnly and DropDownDescriptionOnly and DisplayAsDropDownListItem and hasNotFoundResult then
+      result:=notfoundresult;
   end;
 end;
+
 
 function TMemoryRecord.GetValue: string;
 var
@@ -2769,6 +2949,8 @@ var
 
   i: integer;
   e: boolean;
+
+  f: single;
 begin
 
 
@@ -2799,14 +2981,22 @@ begin
     case vartype of
       vtCustom:
       begin
-        if customtype<>nil then
+        if fcustomtype<>nil then
         begin
-          if customtype.scriptUsesFloat then
-            result:=FloatToStr(customtype.ConvertDataToFloat(buf, RealAddress))
+          if fcustomtype.scriptUsesFloat then
+          begin
+            if ShowAsHex then  //so stupid, but whatever
+            begin
+              f:=fcustomtype.ConvertDataToFloat(buf, RealAddress);
+              result:=inttohex(pdword(@f)^,8);
+            end
+            else
+              result:=FloatToStr(fcustomtype.ConvertDataToFloat(buf, RealAddress))
+          end
           else
-            if showashex         then result:=inttohex(customtype.ConvertDataToInteger(buf, RealAddress),8) 
-            else if showassigned then result:=inttostr(integer(customtype.ConvertDataToInteger(buf, RealAddress)))
-            else                      result:=inttostr(dword(customtype.ConvertDataToInteger(buf, RealAddress)));
+            if showashex         then result:=inttohex(fcustomtype.ConvertDataToInteger(buf, RealAddress),8) 
+            else if showassigned then result:=inttostr(integer(fcustomtype.ConvertDataToInteger(buf, RealAddress)))
+            else                      result:=inttostr(dword(fcustomtype.ConvertDataToInteger(buf, RealAddress)));
         end
         else
           result:=rsError;
@@ -2905,13 +3095,14 @@ var
   ps: psingle absolute buf;
   pd: pdouble absolute buf;
   pqw: PQWord absolute buf;
-
   li: PLongInt absolute buf;
   li64: PQWord absolute buf;
 
   wc: PWideChar absolute buf;
   c: PChar absolute buf;
   originalprotection: dword;
+
+  v64: qword;
 
   bts: TBytes;
   mask: qword;
@@ -2923,11 +3114,17 @@ var
 
   mr: TMemoryRecord;
 
-  unparsedvalue: string;
+  unparsedvalue, parsedvalue: string;
   check: boolean;
 
   oldluatop: integer;
   vpe: boolean;
+
+  setvaluescript: Tstringlist;
+
+  usesMath: boolean;
+  lastBraceOpen: integer;
+  f: single;
 begin
   //check if it is a '(description)' notation
 
@@ -2937,17 +3134,105 @@ begin
   begin
     v:=trim(v);
 
-    {$IFNDEF UNIX}
-    if (length(v)>2) and (v[1]='(') and (v[length(v)]=')') then
+    {$IFNDEF jni}
+
+    if vartype in [vtByte..vtDouble, vtCustom] then
     begin
-      //yes, it's a (description)
-      temps:=copy(v, 2,length(v)-2);
-      //search the addresslist for a entry with name (temps)
+      //numeric type: scan for (...) and replace it with the apropriate values
+      //then apply the magic of math/lua to the what is left  (assuming math is used, which is found out during the first pass scan)
+      usesmath:=false;
 
-      mr:=TAddresslist(fOwner).getRecordWithDescription(temps);
-      if mr<>nil then
-        v:=mr.GetValue;
+      if (length(v)>1) and (v[1]<>'[') then //not a legacy lua specific value
+      begin
+        lastBraceOpen:=0;
+        parsedvalue:='';
+        i:=1;
+        while i<=length(v) do
+        begin
+          case v[i] of
+            '(':
+            begin
+              if lastBraceOpen>0 then usesMath:=true;
 
+              lastBraceOpen:=i;
+            end;
+
+            ')':
+            begin
+              if lastBraceOpen>0 then
+              begin
+                temps:=copy(v,lastBraceOpen+1,i-lastBraceOpen-1);
+
+
+
+                mr:=TAddresslist(fOwner).getRecordWithDescription(temps);
+                if mr<>nil then
+                begin
+                  //replace the (memrecdescription) with the memrecvalue
+                  temps:=mr.getValue;
+                  if mr.ShowAsHex then
+                  begin
+                    temps:='0x'+temps;
+
+                    if VarType in [vtSingle, vtDouble, vtCustom] then
+                    begin
+                      if (vartype<>vtCustom) or (fcustomtype.scriptUsesFloat) then
+                      begin
+                        //handle it as an actual float(why the fuck would anyone put a float as hex...)
+                        try
+                          v64:=strtoint64(temps);
+                          buf:=@v64;
+
+                          if vartype in [vtSingle, vtCustom] then
+                            temps:=FloatToStr(ps^)
+                          else
+                            temps:=FloatToStr(pd^);
+                        except
+
+                          //ugh...  whatever
+                        end;
+                      end;
+                    end;
+                  end;
+
+                  v:=copy(v,1,lastBraceOpen-1)+temps+copy(v,i+1);
+                  i:=lastBraceOpen+length(temps);
+                  lastBraceOpen:=0;
+                  continue;
+                end
+                else
+                  usesMath:=true;
+
+
+                lastBraceOpen:=0;
+              end else usesMath:=true; //weird math that I don't get and should fail, but whatever...
+            end;
+
+
+            '-','+','/','*': usesMath:=true;
+
+          end;
+          inc(i);
+        end;
+
+        if usesmath then
+          v:='['+v+']'; //send it to the lua parser
+      end;
+    end
+    else
+    begin
+      //not an integer type, can still use the notation though
+      if (length(v)>2) and (v[1]='(') and (v[length(v)]=')') then
+      begin
+        //yes, it's a (description)
+        temps:=copy(v, 2,length(v)-2);
+        //search the addresslist for a entry with name (temps)
+
+        mr:=TAddresslist(fOwner).getRecordWithDescription(temps);
+        if mr<>nil then
+          v:=mr.GetValue;
+
+      end;
     end;
     {$ENDIF}
   end;
@@ -2955,8 +3240,9 @@ begin
   if (not isfreezer) then
     undovalue:=GetValue;
 
+  realAddress:=GetRealAddress; //quick update
 
-  {$IFNDEF UNIX}
+  {$IFNDEF jni}
   if (not isfreezer) and (moRecursiveSetValue in options) then //do this for all it's children
   begin
     for i:=0 to treenode.Count-1 do
@@ -2973,7 +3259,7 @@ begin
   //and now set it for myself
 
 
-  realAddress:=GetRealAddress; //quick update
+  if fisGroupHeader then exit;
 
 
   currentValue:={utf8toansi}(v);
@@ -2992,7 +3278,7 @@ begin
     end;
   end;
 
-  bufsize:=getbytesize;
+  bufsize:=4+getbytesize; //+4 because of 1 byte custom types that may show as a hexadecimal float.. ugh..  why...
 
   if (vartype=vtbinary) and (bufsize=3) then bufsize:=4;
   if (vartype=vtbinary) and (bufsize>4) then bufsize:=8;
@@ -3009,7 +3295,7 @@ begin
     if vartype in [vtBinary, vtByteArray] then //fill the buffer with the original byte
       if not check then exit;
 
-    {$IFNDEF UNIX}
+    {$IFNDEF jni}
     if (Vartype in [vtByte..vtDouble, vtCustom]) then
     begin
       //check if it's a bracket enclosed value [    ]
@@ -3018,11 +3304,20 @@ begin
       begin
 
         oldluatop:=lua_gettop(luavm);
+        setvaluescript:=tstringlist.create;
+
         try
-          if lua_dostring(luavm, pchar('return '+copy(CurrentValue,2, length(CurrentValue)-2)))=0 then
+          setvaluescript.Add('local oldvalue='+getValue);
+          setvaluescript.Add('local value=oldvalue');
+          setvaluescript.Add('return '+copy(CurrentValue,2, length(CurrentValue)-2));
+
+
+          if lua_dostring(luavm, pchar(setvaluescript.text))=0 then
             currentValue:=lua_tostring(luavm, -1);
         finally
           lua_settop(luavm, oldluatop);
+
+          freeandnil(setvaluescript);
         end;
       end;
     end;
@@ -3031,12 +3326,20 @@ begin
     case VarType of
       vtCustom:
       begin
-        if customtype<>nil then
+        if fcustomtype<>nil then
         Begin
-          if customtype.scriptUsesFloat then
-            customtype.ConvertFloatToData(StrToFloatEx(currentValue), ps, RealAddress)
+          if fcustomtype.scriptUsesFloat then
+          begin
+            if not fShowAsHex then
+              fcustomtype.ConvertFloatToData(StrToFloatEx(currentValue), ps, RealAddress)
+            else
+            begin
+              v64:=StrToQWordEx(currentvalue); //hexvalue yeah...
+              fcustomtype.ConvertFloatToData(psingle(@v64)^, ps, RealAddress)
+            end;
+          end
           else
-            customtype.ConvertIntegerToData(strtoint(currentValue), pdw, RealAddress);
+            fcustomtype.ConvertIntegerToData(StrToQWordEx(currentValue), pdw, RealAddress);
 
         end;
       end;
@@ -3101,7 +3404,7 @@ begin
         //copy the string to the buffer
         if extra.stringData.unicode then
         begin
-          x:=min(x,length(tempsw));
+          x:=min(x,PtrUInt(length(tempsw)));
           if extra.stringData.ZeroTerminate then
             inc(x); //include the zero terminator
 
@@ -3115,7 +3418,7 @@ begin
           if extra.stringData.codepage then
             tempsa:=UTF8ToWinCP(tempsa);
 
-          x:=min(x,length(tempsa));
+          x:=min(x,PtrUInt(length(tempsa)));
           if extra.stringData.ZeroTerminate then
             inc(x); //include the zero terminator
 
@@ -3176,9 +3479,18 @@ begin
 end;
 
 function TMemoryRecord.getBaseAddress: ptrUint;
+var parentMR: TMemoryRecord;
 begin
   if fIsOffset and hasParent then
-    result:=parent.RealAddress+baseaddress //assuming that the parent has had it's real address calculated first
+  begin
+    parentMR:=parent;
+    while ((parentMR.interpretableaddress='') or (parentMR.interpretableaddress='0')) and parentMR.hasParent do parentMR:=parentMR.parent; // find first ancestor with interpretableaddress
+
+    if not ((parentMR.interpretableaddress='') or (parentMR.interpretableaddress='0')) then
+      result:=parentMR.RealAddress+baseaddress //assuming that the ancestor has had it's real address calculated first
+    else
+      result:=BaseAddress;
+  end
   else
     result:=BaseAddress;
 end;

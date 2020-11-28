@@ -5,13 +5,15 @@ unit savedisassemblyfrm;
 interface
 
 uses
-  LCLIntf, LResources, Messages, SysUtils, Variants, Classes, Graphics,
+  LCLIntf, LResources, Messages, LMessages, SysUtils, Variants, Classes, Graphics,
   Controls, Forms, Dialogs, symbolhandler, symbolhandlerstructs, disassembler,
   StdCtrls, ComCtrls, ActnList, Clipbrd, ExtCtrls, strutils, Parsers;
 
 type
   TfrmSavedisassembly = class;
   TSaveDisassemblyThread=class(TThread)
+  private
+    procedure closeform;
   public
     progressbar: tprogressbar;
     startaddress: ptrUint;
@@ -19,9 +21,11 @@ type
     address: boolean;
     bytes: boolean;
     opcode: boolean;
+    comment: boolean;
     copymode: boolean;
     filename: string;
     form: TfrmSavedisassembly;
+
     procedure execute; override;
   end;
 
@@ -32,6 +36,7 @@ type
     cbAddress: TCheckBox;
     cbBytes: TCheckBox;
     cbOpcode: TCheckBox;
+    cbComment: TCheckBox;
     Edit1: TEdit;
     Edit2: TEdit;
     Label1: TLabel;
@@ -84,8 +89,9 @@ var oldaddress, currentaddress: ptrUint;
     addresslength: integer;
 begin
   disassembler:=TDisassembler.Create;
-  disassembler.showmodules:=memorybrowser.Showmoduleaddresses1.checked;
-  disassembler.showsymbols:=memorybrowser.Showsymbols1.Checked;
+  disassembler.showmodules:=memorybrowser.miShowModuleAddresses.checked;
+  disassembler.showsymbols:=memorybrowser.miShowSymbols.Checked;
+  disassembler.showsections:=memorybrowser.miShowSectionAddresses.checked;
 
   currentaddress:=startaddress;
 
@@ -142,10 +148,6 @@ begin
     if specialpart='' then
       specialpart:=disassembler.DecodeLastParametersToString;
 
-    if specialpart<>'' then
-      opcodepart:=opcodepart+' { '+specialpart+' }';
-
-
 
     if address then
     begin
@@ -164,9 +166,11 @@ begin
 
     if opcode then temps:=temps+opcodepart;
 
-    if (address or opcode) or (currentaddress>stopaddress) then
+    if (comment) and (specialpart<>'') then temps:=temps+' { '+specialpart+' }';
+
+    if (address or opcode or comment) or (currentaddress>stopaddress) then
     begin
-      //each line for address / opcode, and only one time at the and for bytes only
+      //each line for address/opcode/comment, and only one time at the and for bytes only
       if copymode then
       begin
         //save to clipboard
@@ -194,8 +198,17 @@ begin
 
   disassembler.free;
 
+  {$ifdef windows}
   if not terminated then postmessage(form.handle,wm_close,0,0);
+  {$else}
+  queue(CloseForm);
+  {$endif}
 
+end;
+
+procedure TSaveDisassemblyThread.closeform;
+begin
+  form.close;
 end;
 
 procedure TfrmSavedisassembly.setCopyMode(mode: boolean);
@@ -258,6 +271,7 @@ begin
     SaveDisassemblyThread.address:=cbAddress.checked;
     SaveDisassemblyThread.bytes:=cbBytes.Checked;
     SaveDisassemblyThread.opcode:=cbOpcode.Checked;
+    SaveDisassemblyThread.comment:=cbComment.Checked;
     SaveDisassemblyThread.startaddress:=startaddress;
     SaveDisassemblyThread.stopaddress:=stopaddress;
     SaveDisassemblyThread.filename:=savedialog1.FileName;

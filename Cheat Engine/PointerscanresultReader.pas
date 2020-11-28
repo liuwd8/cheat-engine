@@ -7,15 +7,25 @@ The TPointerscanresultReader will read the results from the pointerfile and pres
 }
 interface
 
+{$ifdef darwin}
+uses macport, MacTypes, LCLIntf, sysutils, classes, CEFuncProc, NewKernelHandler,
+  symbolhandler, math, dialogs, LazUTF8,macportdefines;
+{$endif}
+
+
+{$ifdef windows}
 uses windows, LCLIntf, sysutils, classes, CEFuncProc, NewKernelHandler,
   symbolhandler, math, dialogs, LazUTF8;
+{$endif}
 
 resourcestring
   rsPSRCorruptedPointerscanFile = 'Corrupted pointerscan file';
   rsPSRInvalidPointerscanFileVersion = 'Invalid pointerscan file version';
   rsBuggedList = 'BuggedList';
 
+  {$ifdef windows}
 function GetFileSizeEx(hFile:HANDLE; FileSize:PQWord):BOOL; stdcall; external 'kernel32.dll' name 'GetFileSizeEx';
+{$endif}
 
 
 type TPointerscanResult=packed record
@@ -46,7 +56,7 @@ type
     end;
 
     cacheStart: integer;
-    cacheSize: integer;
+    cacheSize: size_t;
     cache: pointer;
 
     cacheStart2: integer;
@@ -161,6 +171,7 @@ begin
   //search the folder this ptr file is in for .result.* files
   //extract1
 
+  rs.clear;
   filemap:=TMap.Create(its8, sizeof(pointer));
 
   if lookupmode=1 then
@@ -174,7 +185,11 @@ begin
       ext1:=ExtractFileExt(fr.name);
       ext1:=copy(ext1, 2, length(ext1)-1);
 
-      if TryStrToInt64('$'+ext1, v1) then
+      if copy(ext1,1,5)='child' then
+      begin
+        rs.add(path+fr.name); //no need to sort
+      end
+      else if TryStrToInt64('$'+ext1, v1) then
       begin
         f:=path+fr.name;
         getmem(fn, length(f)+1);
@@ -314,8 +329,11 @@ begin
       else
         offset:=wantedoffset;
 
-
-      cachesize:=min(files[j].filesize-offset, systeminfo.dwAllocationGranularity*32);    //normally 2MB
+{$if FPC_FULLVERSION<30200}
+      cachesize:=min(files[j].filesize-offset, systeminfo.dwAllocationGranularity*32);    //normally 2MBZ
+{$else}
+      cachesize:=min(files[j].filesize-offset, qword(systeminfo.dwAllocationGranularity*32));    //normally 2MBZ
+{$endif}
       if cache2<>nil then
         unmapviewoffile(cache2);
 

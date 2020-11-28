@@ -5,7 +5,13 @@ unit frmStackViewUnit;
 interface
 
 uses
-  windows, cefuncproc, newkernelhandler, Classes, SysUtils, FileUtil, LResources,
+  {$ifdef darwin}
+  macport,
+  {$endif}
+  {$ifdef windows}
+  windows,
+  {$endif}
+  cefuncproc, newkernelhandler, Classes, SysUtils, FileUtil, LResources,
   Forms, Controls, Graphics, Dialogs, StdCtrls, Menus, stacktrace2, Clipbrd, ComCtrls,
   strutils, frmSelectionlistunit, maps;
 
@@ -16,6 +22,7 @@ type
   TfrmStackView = class(TForm)
     ColorDialog1: TColorDialog;
     FindDialog1: TFindDialog;
+    svImageList: TImageList;
     lvStack: TListView;
     MenuItem1: TMenuItem;
     MenuItem2: TMenuItem;

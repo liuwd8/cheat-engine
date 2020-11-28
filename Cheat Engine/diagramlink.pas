@@ -5,7 +5,13 @@ unit diagramlink;
 interface
 
 uses
-  Classes, SysUtils, graphics, DiagramTypes, Diagramblock;
+  {$ifdef darwin}
+  macport,
+  {$endif}
+  {$ifdef windows}
+  windows,
+  {$endif}
+  Classes, SysUtils, graphics, DiagramTypes, Diagramblock{$ifdef windows}, gl, glu, GLext{$endif};
 
 type
 
@@ -25,7 +31,19 @@ type
     useCustomArrowStyles: boolean;
     fCustomArrowStyles: TArrowStyles;
 
+    useCustomArrowSize: boolean;
+    fCustomArrowSize: integer;
+
     fName: string;
+
+    fmaxx: integer; //set after render
+    fmaxy: integer;
+
+    fOnDblClick: TNotifyEvent;
+    fOnDestroy: TNotifyEvent;
+    ftag: qword;
+
+
 
     function getYPosFromX(x: single; linestart: tpoint; lineend: tpoint): double;
     function getXPosFromY(y: single; linestart: tpoint; lineend: tpoint): double;
@@ -40,11 +58,16 @@ type
     function getArrowStyles: TArrowStyles;
     procedure setArrowStyles(s: TArrowStyles);
 
-    function getCenterAdjustForBorderSide(side: TDiagramBlockSide): TPoint;
+    function getArrowSize: integer;
+    procedure setArrowSize(i: integer);
+
+
     function getAngle(originpoint: TPoint; destinationpoint: TPoint): single;
+    procedure DrawPlotPoint(point: TPoint);
     procedure DrawArrow(originpoint: TPoint; rot: single; centeradjust: tpoint);
 
     procedure drawArrowInCenter;
+    function zoompoint(p: tpoint): TPoint;
   public
     procedure render;
 
@@ -69,9 +92,14 @@ type
     procedure setOriginDescriptor(d: TDiagramBlockSideDescriptor);
     procedure setDestinationDescriptor(d: TDiagramBlockSideDescriptor);
 
+    procedure saveToStream(f: tstream);
+    procedure loadFromStream(f: tstream; blocks: tlist);
+
 
     property PlotPoints[index: integer]: TPoint read getPoint write updatePointPosition;
+    property OnDestroy: TNotifyEvent read fOnDestroy write fOnDestroy;
     constructor create(diagramconfig: TDiagramConfig; _origin,_destination: TDiagramBlockSideDescriptor);
+    constructor createFromStream(diagramconfig: TDiagramConfig; f: tstream; blocks: TList);
     destructor destroy; override;
   published
     property OriginBlock: TDiagramBlock read origin.Block write origin.block;
@@ -80,12 +108,22 @@ type
     property LineColor: TColor read getLineColor write setLineColor;
     property LineThickness: integer read getLineThickness write setLineThickness;
     property ArrowStyles: TArrowStyles read getArrowStyles write setArrowStyles;
+    property ArrowSize: integer read getArrowSize write setArrowSize;
     property Name: string read fName write fName;
+    property maxx: integer read fmaxx;
+    property maxy: integer read fmaxy;
+    property OnDblClick: TNotifyEvent read fOnDblClick write fOnDblClick;
+    property Tag: qword read ftag write ftag;
   end;
 
 implementation
 
-uses math, types;
+uses math, types, typinfo;
+
+var
+  PlotPointVertices:array [0..3] of array [0..1] of single;
+  PlotPointIndices: array [0..3] of WORD;
+
 
 function TDiagramLink.getLineThickness: integer;
 begin
@@ -130,7 +168,19 @@ begin
   useCustomArrowStyles:=true;
 end;
 
+function TDiagramLink.getArrowSize: integer;
+begin
+  if useCustomArrowStyles then
+    result:=fCustomArrowSize
+  else
+    result:=config.arrowSize;
+end;
 
+procedure TDiagramLink.setArrowSize(i: integer);
+begin
+  fCustomArrowSize:=i;
+  useCustomArrowSize:=true;
+end;
 
 function TDiagramLink.getYPosFromX(x: single; linestart: tpoint; lineend: tpoint): double;
 var
@@ -146,8 +196,6 @@ begin
   begin
     slope:=deltay/deltax;
     result:=slope*double(x-linestart.x)+double(linestart.y);
-
-
   end;
 end;
 
@@ -162,17 +210,21 @@ begin
   if deltay=0 then
     result:=Infinity
   else
+  begin
     slope:=deltax/deltay;
+    result:=slope*double(y-linestart.y)+double(linestart.x);
+  end;
 
-  result:=slope*double(y-linestart.y)+double(linestart.x);
+
 
   // config.canvas.Pixels[trunc(result),y]:=$00ff00;
 end;
 
 function TDiagramLink.getCenterPoint(linestart: tpoint; lineend: tpoint): tpoint;
-//calculate the center between two lines and return the x,y position
-var x1,x2: integer;
+//calculate the center between two points and return the x,y position
+var x1,x2,y1,y2: integer;
   _x: single;
+  _y: single;
 begin
   x1:=min(linestart.x,lineend.x);
   x2:=max(linestart.x,lineend.x);
@@ -180,10 +232,11 @@ begin
   _x:=single(x1)+(single(x2-x1) / 2);
   result.x:=trunc(_x);
 
-  if x2-x1=0 then
-    result.y:=linestart.y+((max(linestart.y,lineend.y)-min(linestart.y,lineend.y)) div 2)
-  else
-    result.y:=trunc(getYPosFromX(_x,linestart,lineend));
+  y1:=min(linestart.y,lineend.y);
+  y2:=max(linestart.y,lineend.y);
+
+  _y:=single(y1)+(single(y2-y1) / 2);
+  result.y:=trunc(_y);
 end;
 
 function TDiagramLink.ptInLine(pt: tpoint; linestart: tpoint; lineend: tpoint): boolean;
@@ -222,26 +275,6 @@ begin
 
 end;
 
-const arrow:array [0..2] of TPoint =(
-  (x:-5;y:-5),
-  (x:5;y:0),
-  (x:-5;y:5)
-);
-
-function TDiagramLink.getCenterAdjustForBorderSide(side: TDiagramBlockSide): TPoint;
-begin
-  case side of
-    dbsTop: exit(point(0,-5));
-    dbsTopRight: exit(point(5,-5));
-    dbsRight: exit(point(5,0));
-    dbsBottomRight: exit(point(5,5));
-    dbsBottom: exit(point(0,5));
-    dbsBottomLeft: exit(point(-5,5));
-    dbsLeft: exit(point(-5,0));
-    dbsTopLeft: exit(point(-5,-5));
-    else exit(point(0,0)); //never
-  end;
-end;
 
 function TDiagramLink.getAngle(originpoint: TPoint; destinationpoint: TPoint): single;
 var dx,dy: integer;
@@ -252,11 +285,92 @@ begin
   result:=arctan2(dy,dx);
 end;
 
+
+
+
+procedure TDiagramLink.DrawPlotPoint(point: TPoint);
+var
+  c: TCanvas;
+  oldbc: TColor;
+  pps: single;
+begin
+  {$ifdef windows}
+  if config.UseOpenGL then
+  begin
+    glColor3ub(255,0,0);
+
+    if config.CanUsebuffers then
+    begin
+      if config.plotpointvertexbuf=0 then
+      begin
+        glGenBuffers(1,@config.plotpointvertexbuf);
+        glBindBuffer(GL_ARRAY_BUFFER, config.plotpointvertexbuf);
+
+        pps:=(config.PlotPointSize / 2);
+        PlotPointVertices[0][0]:=-pps;
+        PlotPointVertices[0][1]:=-pps;
+
+        PlotPointVertices[1][0]:=+pps;
+        PlotPointVertices[1][1]:=-pps;
+
+        PlotPointVertices[2][0]:=+pps;
+        PlotPointVertices[2][1]:=+pps;
+
+        PlotPointVertices[3][0]:=-pps;
+        PlotPointVertices[3][1]:=+pps;
+        glBufferData(GL_ARRAY_BUFFER,4*2*sizeof(single), @PlotPointVertices[0], GL_STATIC_DRAW);
+
+        glGenBuffers(1,@config.plotpointindexbuf);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, config.plotpointindexbuf);
+        PlotPointIndices[0]:=0;
+        PlotPointIndices[1]:=1;
+        PlotPointIndices[2]:=2;
+        PlotPointIndices[3]:=3;
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(WORD)*4, @PlotPointIndices[0], GL_STATIC_DRAW);
+      end;
+
+      glBindBuffer(GL_ARRAY_BUFFER, config.plotpointvertexbuf);
+      glEnableClientState ( GL_VERTEX_ARRAY );
+      glVertexPointer(2,GL_FLOAT,0,nil);
+
+      glTranslatef(point.x,point.y,0);
+      glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, config.plotpointindexbuf);
+      glDrawRangeElements(GL_QUADS,0,3,4,GL_UNSIGNED_SHORT,nil);
+      glLoadIdentity;
+    end
+    else
+    begin
+      pps:=(config.PlotPointSize / 2);
+      glBegin(GL_QUADS);
+      glVertex2f(point.x-pps, point.y-pps);
+      glVertex2f(point.x+pps, point.y-pps);
+      glVertex2f(point.x+pps, point.y+pps);
+      glVertex2f(point.x-pps, point.y+pps);
+      glEnd;
+    end;
+
+
+  end
+  else
+  {$endif}
+  begin
+    c:=config.canvas;
+    oldbc:=c.Brush.Color;
+    c.Brush.Color:=clred;
+    c.FillRect(point.x-trunc((config.PlotPointSize/2)*config.zoom),point.y-trunc((config.PlotPointSize/2)*config.zoom),point.x+ceil((config.PlotPointSize/2)*config.zoom),point.y+ceil((config.PlotPointSize/2)*config.zoom));
+    c.brush.color:=oldbc;
+  end;
+end;
+
+const arrow:array [0..2] of TPoint =(
+  (x:-5;y:-5),
+  (x:5;y:0),
+  (x:-5;y:5)
+);
+
 procedure TDiagramLink.DrawArrow(originpoint: TPoint; rot: single; centerAdjust: TPoint);
 var
   c: tcanvas;
-
-
  // rot: float;
 
   r: float;
@@ -266,21 +380,76 @@ var
 
  // oldp,oldb: tcolor;
   i: integer;
+
+  _r,_g,_b: byte;
+
+  sizescale: single;
 begin
   //calculate the angle to point at based from original to destination
   //originpoint.
-  c:=config.canvas;
-  arr:=arrow;
 
-  for i:=0 to 2 do
+  sizescale:=1;
+
+  if ArrowSize<>5 then
+    sizescale:=arrowsize/5;
+
+  {$ifdef windows}
+  if config.UseOpenGL then
   begin
-    r:=sqrt(sqr(arr[i].X+centerAdjust.x) + sqr(arr[i].Y+centerAdjust.y));
-    p := rot + arcTan2(arr[i].Y+centerAdjust.y , arr[i].X+centerAdjust.x);
-    arr[i].X := Round(r * cos(p))+originpoint.x;
-    arr[i].Y := Round(r * sin(p))+originpoint.y;
-  end;
+    //glTranslatef(centeradjust.x,centeradjust.y,0);
 
-  c.Polygon(arr);
+    glLoadIdentity;
+
+
+    glTranslatef(originpoint.x,originpoint.y,0);
+    glRotatef(radtodeg(rot),0,0,1);
+    glTranslatef(centeradjust.x,centeradjust.y,0);
+    glScalef(config.zoom,config.zoom,1);
+
+    RedGreenBlue(linecolor,_r,_g,_b);
+
+    glColor3f(_r/255,_g/255,_b/255);
+    glBegin(GL_TRIANGLES);
+    glVertex2f(arrow[0].x, arrow[0].y);
+    glVertex2f(arrow[1].x, arrow[1].y);
+    glVertex2f(arrow[2].x, arrow[2].y);
+    //glVertex2f(arrow[0].x, arrow[0].y);
+    glEnd;
+
+    //glcolor3d(1,0,0);
+
+
+    glBegin(GL_LINE_STRIP);
+    glVertex2f(arrow[0].x, arrow[0].y);
+    glVertex2f(arrow[1].x, arrow[1].y);
+    glVertex2f(arrow[2].x, arrow[2].y);
+    glVertex2f(arrow[0].x, arrow[0].y);
+    glEnd;
+    glLoadIdentity;
+  end
+  else
+  {$endif}
+  begin
+    c:=config.canvas;
+    arr:=arrow;
+
+
+    for i:=0 to 2 do
+    begin
+      if sizescale<>1 then
+      begin
+        arr[i].x:=ceil(arr[i].x*sizescale);
+        arr[i].y:=ceil(arr[i].y*sizescale);
+      end;
+
+      r:=sqrt(sqr(arr[i].X+centerAdjust.x) + sqr(arr[i].Y+centerAdjust.y));
+      p := rot + arcTan2(arr[i].Y+centerAdjust.y , arr[i].X+centerAdjust.x);
+      arr[i].X := Round(r * cos(p)*config.zoom)+originpoint.x;
+      arr[i].Y := Round(r * sin(p)*config.zoom)+originpoint.y;
+    end;
+
+    c.Polygon(arr);
+  end;
 end;
 
 procedure TDiagramLink.drawArrowInCenter;
@@ -310,7 +479,12 @@ var
 
   xpos,ypos: single;
   i: integer;
+
+  adjust: Tpoint;
 begin
+  adjust.x:=config.scrollx;
+  adjust.y:=config.scrolly;
+
   originpoint:=origin.block.getConnectPosition(origin.side, origin.sideposition);
   destinationpoint:=destination.block.getConnectPosition(destination.side,destination.sideposition);
 
@@ -355,15 +529,17 @@ begin
       ypos:=getYPosFromX(linelist[i].p2.x-xpos,linelist[i].p1, linelist[i].p2);
       if ypos=Infinity then ypos:=linelist[i].p2.y;
 
-      drawArrow(point(linelist[i].p2.x-trunc(xpos),trunc(ypos)),getAngle(linelist[i].p1,linelist[i].p2),point(0,0));
+      drawArrow(zoompoint(point(linelist[i].p2.x-trunc(xpos),trunc(ypos))-adjust),getAngle(zoompoint(linelist[i].p1-adjust),zoompoint(linelist[i].p2-adjust)),point(0,0));
 
       exit;
 
     end;
   end;
+end;
 
-
-
+function TDiagramLink.zoompoint(p: tpoint): TPoint;
+begin
+  result:=point(ceil(p.x*config.zoom),ceil(p.y*config.zoom));
 end;
 
 procedure TDiagramLink.render;
@@ -382,37 +558,89 @@ var
 
   p1,p2: tpoint;
 
+  mx,my: integer;
+
+  adjust: Tpoint;
+  r,g,b: byte;
+  {$IFDEF windows} t: TColorref; {$ENDIF}
 begin
-  c:=config.canvas;
+  adjust.x:=config.scrollx;
+  adjust.y:=config.scrolly;
 
+  {$ifdef windows}
+  if config.UseOpenGL then
+  begin
+    RedGreenBlue(linecolor,r,g,b);
+    glColor3ub(r,g,b);
+    glLineWidth(LineThickness*config.zoom);
+    oldw:=0;
+    oldc:=0;
+    c:=nil;
+  end
+  else
+  {$endif}
+  begin
+    c:=config.canvas;
 
+    oldw:=c.pen.Width;
+    oldc:=c.pen.color;
 
-  oldw:=c.pen.Width;
-  oldc:=c.pen.color;
+    c.pen.width:=ceil(LineThickness*config.zoom);
+    c.pen.color:=LineColor;
+  end;
 
-  c.pen.width:=config.LineThickness;
-  c.pen.color:=LineColor;
 
   originpoint:=origin.block.getConnectPosition(origin.side, origin.sideposition);
   destinationpoint:=destination.block.getConnectPosition(destination.side,destination.sideposition);
 
-  c.PenPos:=originpoint;
+  mx:=originpoint.x;
+  my:=originpoint.y;
+
+  mx:=max(mx, destinationpoint.x);
+  my:=max(my, destinationpoint.y);
+
+  {$ifdef windows}
+  if config.UseOpenGL then
+  begin
+    glBegin(GL_LINE_STRIP);
+    glVertex2f((originpoint.x-config.scrollx)*config.zoom, (originpoint.y-config.scrolly)*config.zoom);
+  end
+  else
+  {$endif}
+  begin
+    c.PenPos:=zoompoint(originpoint-adjust);
+  end;
 
   for i:=0 to Length(points)-1 do
   begin
-    c.LineTo(points[i]);
+    mx:=max(mx, points[i].x);
+    my:=max(my, points[i].y);
 
-    if config.DrawPlotPoints then
-    begin
-      oldbc:=c.Brush.Color;
-      c.Brush.Color:=clred;
-      c.FillRect(points[i].x-config.PlotPointSize,points[i].y-config.PlotPointSize,points[i].x+config.PlotPointSize,points[i].y+config.PlotPointSize);
-      c.brush.color:=oldbc;
-    end;
+    {$ifdef windows}
+    if config.UseOpenGL then
+      glVertex2f((points[i].x-config.scrollx)*config.zoom, (points[i].y-config.scrolly)*config.zoom)
+    else
+    {$endif}
+      c.LineTo(zoompoint(points[i]-adjust));
   end;
 
-  c.LineTo(destinationpoint);
+  fmaxx:=mx;
+  fmaxy:=my;
 
+  {$IFDEF windows}
+  if config.UseOpenGL then
+  begin
+    glVertex2f((destinationpoint.x-config.scrollx)*config.zoom, (destinationpoint.y-config.scrolly)*config.zoom);
+
+    glEnd;
+  end
+  else
+  {$ENDIF}
+    c.LineTo(zoompoint(destinationpoint-adjust));
+
+  if config.DrawPlotPoints then
+    for i:=0 to length(points)-1 do
+      drawPlotPoint(zoompoint(points[i]-adjust));
 
   if asOrigin in arrowStyles then
   begin
@@ -421,7 +649,7 @@ begin
     else
       directionpoint:=destinationpoint;
 
-    drawArrow(originpoint, getAngle(originpoint,directionpoint),getCenterAdjustForBorderSide(origin.side));
+    drawArrow(zoompoint(originpoint-adjust), getAngle(zoompoint(originpoint-adjust),zoompoint(directionpoint-adjust)),point(5,0));
   end;
 
   if asDestination in ArrowStyles then
@@ -431,7 +659,7 @@ begin
     else
       directionpoint:=originpoint;
 
-    drawArrow(destinationpoint, getAngle(directionpoint,destinationpoint),getCenterAdjustForBorderSide(destination.side));
+    drawArrow(zoompoint(destinationpoint-adjust), getAngle(zoompoint(directionpoint-adjust),zoompoint(destinationpoint-adjust)),point(-5,0)); //getCenterAdjustForBorderSide(destination.side));
   end;
 
   if asPoints in arrowstyles then
@@ -443,43 +671,26 @@ begin
       else
         directionpoint:=destinationpoint;
 
-      drawArrow(points[i], getAngle(points[i],directionpoint),point(0,0));
+      drawArrow(zoompoint(points[i]-adjust), getAngle(zoompoint(points[i]-adjust),zoompoint(directionpoint-adjust)),point(0,0));
     end;
   end;
 
   if asCenterBetweenPoints in arrowstyles then
   begin
-    if length(points)=0 then
-    begin
-      p1:=originpoint;
-      p2:=destinationpoint;
-      drawArrow(getCenterPoint(p1,p2), getAngle(p1,p2),point(0,0));
-    end;
+    p1:=zoompoint(originpoint-adjust);
+
 
     for i:=0 to length(points)-1 do
     begin
-      if i=0 then
-      begin
-        p1:=originpoint;
-        p2:=points[i];
+      p2:=zoompoint(points[i]-adjust);
+      drawArrow(getCenterPoint(p1,p2), getAngle(p1,p2),point(0,0));
 
-        drawArrow(getCenterPoint(p1,p2), getAngle(p1,p2),point(0,0));
-      end
-      else
-      if i=length(points)-1 then
-      begin
-        p1:=points[i];
-        p2:=destinationpoint;
-
-        drawArrow(getCenterPoint(p1,p2), getAngle(p1,p2),point(0,0));
-      end else
-      begin
-        p1:=points[i-1];
-        p2:=points[i];
-        drawArrow(getCenterPoint(p1,p2), getAngle(p1,p2),point(0,0));
-      end;
-      drawArrow(points[i], getAngle(points[i],directionpoint),point(0,0));
+      p1:=p2;
     end;
+    p2:=zoompoint(destinationpoint-adjust);
+    drawArrow(getCenterPoint(p1,p2), getAngle(p1,p2),point(0,0));
+
+
   end;
 
   if asCenter in arrowstyles then
@@ -489,8 +700,13 @@ begin
   end;
 
 
-  c.pen.Width:=oldw;
-  c.pen.color:=oldc;
+  {$IFDEF windows}
+  if not config.UseOpenGL then
+  begin
+    c.pen.Width:=oldw;
+    c.pen.color:=oldc;
+  end;
+  {$ENDIF}
 end;
 
 function TDiagramLink.isOverLine(x,y: integer): boolean;
@@ -676,6 +892,103 @@ begin
   destination:=d;
 end;
 
+procedure TDiagramLink.saveToStream(f: tstream);
+var i: integer;
+begin
+  f.WriteAnsiString('LNK');
+
+  f.WriteAnsiString(fname);
+
+  f.WriteDWord(origin.block.BlockID);
+  f.WriteByte(integer(origin.side));
+  f.WriteDWord(integer(origin.sideposition));
+
+  f.WriteDWord(destination.block.BlockID);
+  f.WriteByte(integer(destination.side));
+  f.WriteDWord(integer(destination.sideposition));
+
+  f.WriteDWord(length(points));
+  for i:=0 to length(points)-1 do
+  begin
+    f.writeDword(points[i].x);
+    f.writeDword(points[i].y);
+  end;
+
+  f.writebyte(ifthen(useCustomColor,1,0));
+  if useCustomColor then f.WriteDWord(fCustomColor);
+
+  f.writebyte(ifthen(useCustomLineThickness,1,0));
+  if useCustomLineThickness then f.WriteDWord(fCustomLineThickness);
+
+  f.writebyte(ifthen(useCustomArrowSize,1,0));
+  if useCustomArrowSize then f.WriteDWord(fCustomArrowSize);
+
+  f.writebyte(ifthen(useCustomArrowStyles,1,0));
+  if useCustomArrowStyles then f.WriteByte(byte(fCustomArrowStyles));
+
+end;
+
+procedure TDiagramLink.loadFromStream(f: tstream; blocks: tlist);
+  function idToBlock(id: integer): TDiagramBlock;
+  var
+    i: integer;
+    b: TDiagramBlock;
+  begin
+    result:=nil;
+
+    if (id<blocks.count) and (TDiagramBlock(blocks[id]).BlockID=id) then exit(TDiagramBlock(blocks[id]));
+
+    //unexpected blockorder
+
+    for i:=0 to blocks.count-1 do
+    begin
+      b:=TDiagramBlock(blocks[i]);
+      if b.blockid=id then
+        exit(b);
+    end;
+  end;
+
+var  i: integer;
+begin
+  if f.ReadAnsiString<>'LNK' then raise exception.create('Link read error');
+
+  fname:=f.ReadAnsiString;
+
+  origin.block:=idToBlock(f.ReadDWord);
+  if origin.block=nil then
+    raise exception.create('Link read error. Origin for a link not found');
+
+  origin.side:=TDiagramBlockSide(f.ReadByte);
+  origin.sideposition:=f.ReadDWord;
+
+  destination.block:=idToBlock(f.ReadDWord);
+  if destination.block=nil then
+    raise exception.create('Link read error. Destination for a link not found');
+  destination.side:=TDiagramBlockSide(f.ReadByte);
+  destination.sideposition:=f.ReadDWord;
+
+  setlength(points, f.ReadDWord);
+  for i:=0 to length(points)-1 do
+  begin
+    points[i].x:=f.ReadDWord;
+    points[i].y:=f.ReadDWord;
+  end;
+
+  useCustomColor:=f.readbyte=1;
+  if useCustomColor then fCustomColor:=f.ReadDWord;
+
+  useCustomLineThickness:=f.readbyte=1;
+  if useCustomLineThickness then fCustomLineThickness:=f.ReadDWord;
+
+  useCustomArrowSize:=f.readbyte=1;
+  if useCustomArrowSize then fCustomArrowSize:=f.ReadDWord;
+
+  useCustomArrowStyles:=f.readbyte=1;
+  if useCustomArrowStyles then fCustomArrowStyles:=TArrowStyles(f.ReadByte);
+
+
+end;
+
 constructor TDiagramLink.create(diagramconfig: TDiagramConfig; _origin,_destination: TDiagramBlockSideDescriptor);
 begin
   config:=diagramconfig;
@@ -684,8 +997,17 @@ begin
   destination:=_destination;
 end;
 
+constructor TDiagramLink.createFromStream(diagramconfig: TDiagramConfig; f: tstream; blocks: TList);
+begin
+  config:=diagramconfig;
+  loadFromStream(f,blocks);
+end;
+
 destructor TDiagramLink.destroy;
 begin
+  if assigned(fOnDestroy) then
+    fOnDestroy(self);
+
   inherited destroy;
 end;
 

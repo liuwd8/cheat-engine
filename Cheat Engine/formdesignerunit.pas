@@ -27,6 +27,7 @@ type
     MenuItem1: TMenuItem;
     MenuItem2: TMenuItem;
     miAnchorEditor: TMenuItem;
+    miAnchorEditor2: TMenuItem;
     miMenuSep: TMenuItem;
     miMenuMoveUp: TMenuItem;
     miMenuMoveDown: TMenuItem;
@@ -135,6 +136,8 @@ type
 
     procedure OnComponentRenamed(AComponent: TComponent);
     procedure onRefreshPropertyValues;
+    function onMethodFromLookupRoot(const Method:TMethod):boolean;
+
     procedure setFormName;
     procedure mousedownhack(var TheMessage: TLMessage);
   public
@@ -166,11 +169,9 @@ type
     procedure onRenameMethod(const CurName, NewName: String);
     procedure onShowMethod(const Name: String);
     function onCreateMethod(const Name: ShortString; ATypeInfo: PTypeInfo; APersistent: TPersistent; const APropertyPath: string): TMethod;
-    {$if lcl_fullversion >= 1060400}
+
     function ogm(const Method: TMethod; CheckOwner: TObject; OrigLookupRoot: TPersistent): String;
-    {$else}
-    function ogm(const Method: TMethod; CheckOwner: TObject): String;
-    {$endif}
+
     procedure OnGetMethods(TypeData: PTypeData; Proc: TGetStrProc);
     procedure OnGetCompatibleMethods(InstProp: PInstProp; const Proc: TGetStrProc);
 
@@ -197,7 +198,7 @@ implementation
 { TFormDesigner }
 
 
-uses mainunit, DPIHelper{$if lcl_fullversion>=2000000}, LazMsgDialogs{$endif};
+uses mainunit, DPIHelper{$if lcl_fullversion>=2000000}, LazMsgDialogs{$endif}, IDEImagesIntf;
 
 resourcestring
   rsInvalidObject = '{Invalid object}';
@@ -278,11 +279,69 @@ begin
 end;
 
 procedure TFormDesigner.miAnchorEditorClick(Sender: TObject);
+var defaultwidth: integer;
 begin
   if AnchorDesigner=nil then
   begin
     AnchorDesigner:=TAnchorDesigner.Create(self);
-    AnchorDesigner.show;
+
+    //this this is the most dpi unaware window I've seen
+    with AnchorDesigner do
+    begin
+      DPIHelper.AdjustSpeedButtonSize(LeftRefLeftSpeedButton);
+      DPIHelper.AdjustSpeedButtonSize(LeftRefCenterSpeedButton);
+      DPIHelper.AdjustSpeedButtonSize(LeftRefRightSpeedButton);
+      DPIHelper.AdjustSpeedButtonSize(RightRefLeftSpeedButton);
+      DPIHelper.AdjustSpeedButtonSize(RightRefCenterSpeedButton);
+      DPIHelper.AdjustSpeedButtonSize(RightRefRightSpeedButton);
+      DPIHelper.AdjustSpeedButtonSize(TopRefTopSpeedButton);
+      DPIHelper.AdjustSpeedButtonSize(TopRefCenterSpeedButton);
+      DPIHelper.AdjustSpeedButtonSize(TopRefBottomSpeedButton);
+      DPIHelper.AdjustSpeedButtonSize(BottomRefTopSpeedButton);
+      DPIHelper.AdjustSpeedButtonSize(BottomRefCenterSpeedButton);
+      DPIHelper.AdjustSpeedButtonSize(BottomRefBottomSpeedButton);
+
+      defaultWidth:=canvas.TextWidth('10    ');
+      DPIHelper.AdjustEditBoxSize(LeftBorderSpaceSpinEdit, defaultwidth);
+      DPIHelper.AdjustEditBoxSize(TopBorderSpaceSpinEdit, defaultwidth);
+      DPIHelper.AdjustEditBoxSize(RightBorderSpaceSpinEdit, defaultwidth);
+      DPIHelper.AdjustEditBoxSize(BottomBorderSpaceSpinEdit, defaultwidth);
+      DPIHelper.AdjustEditBoxSize(AroundBorderSpaceSpinEdit, defaultwidth);
+
+      BorderSpaceGroupBox.Width:=(AroundBorderSpaceSpinEdit.width+5)*3;
+      Constraints.MinWidth:=(BorderSpaceGroupBox.Width)*4;
+
+
+      IDEImages.AssignImage(LeftRefLeftSpeedButton, 'anchor_left_left');
+      IDEImages.AssignImage(LeftRefCenterSpeedButton, 'anchor_left_center');
+      IDEImages.AssignImage(LeftRefRightSpeedButton, 'anchor_left_right');
+      IDEImages.AssignImage(RightRefLeftSpeedButton, 'anchor_right_left');
+      IDEImages.AssignImage(RightRefCenterSpeedButton, 'anchor_right_center');
+      IDEImages.AssignImage(RightRefRightSpeedButton, 'anchor_right_right');
+      IDEImages.AssignImage(TopRefTopSpeedButton, 'anchor_top_top');
+      IDEImages.AssignImage(TopRefCenterSpeedButton, 'anchor_top_center');
+      IDEImages.AssignImage(TopRefBottomSpeedButton, 'anchor_top_bottom');
+      IDEImages.AssignImage(BottomRefTopSpeedButton, 'anchor_bottom_top');
+      IDEImages.AssignImage(BottomRefCenterSpeedButton, 'anchor_bottom_center');
+      IDEImages.AssignImage(BottomRefBottomSpeedButton, 'anchor_bottom_bottom');
+
+      show;
+
+      DoAutoSize;
+
+      TopGroupBox.left:=BorderSpaceGroupBox.left;
+      BottomGroupBox.Left:=BorderSpaceGroupBox.left;
+      TopGroupBox.width:=BorderSpaceGroupBox.Width;
+      BottomGroupBox.Width:=BorderSpaceGroupBox.Width;
+
+
+      Constraints.MinHeight:=trunc(TopGroupBox.Height*3.2);
+
+      if height<Constraints.MinHeight then
+        height:=Constraints.MinHeight;
+
+
+    end;
   end
   else
     AnchorDesigner.Show;
@@ -302,9 +361,18 @@ begin
   OpenDialog1.Filter := rsFormFilesFrmFRM;
   if (GlobalDesignHook.LookupRoot<>nil) and (GlobalDesignHook.LookupRoot is TCEForm) and (OpenDialog1.Execute) then
   begin
+    //TCEForm(GlobalDesignHook.LookupRoot).Close;
+   // GlobalDesignHook.LookupRoot:=nil;
+
+   // f:=tceform.Create(application);
     f:=TCEForm(GlobalDesignHook.LookupRoot);
+    GlobalDesignHook.LookupRoot:=nil;
 
     f.LoadFromFile(UTF8ToAnsi(OpenDialog1.filename));
+    GlobalDesignHook.LookupRoot:=f;
+
+    surfaceOnChange(self);
+    //designForm(f);
     setFormName;
   end;
 end;
@@ -318,7 +386,11 @@ begin
   begin
     f:=TCEForm(GlobalDesignHook.LookupRoot);
 
+    GlobalDesignHook.LookupRoot:=nil;
     f.LoadFromFileLFM(UTF8ToAnsi(OpenDialog1.filename));
+    GlobalDesignHook.LookupRoot:=f;
+
+    surfaceOnChange(self);
     setFormName;
   end;
 end;
@@ -379,14 +451,16 @@ end;
 procedure TFormDesigner.miSaveClick(Sender: TObject);
 var f: TCeform;
 begin
+
   SaveDialog1.DefaultExt := '.FRM';
   SaveDialog1.Filter := rsFormFilesFrmFRM;
   if (GlobalDesignHook.LookupRoot<>nil) and (GlobalDesignHook.LookupRoot is TCEForm) and (SaveDialog1.Execute) then
   begin
     f:=TCEForm(GlobalDesignHook.LookupRoot);
-
     f.SaveToFile(Utf8ToAnsi(Savedialog1.filename));
   end;
+
+
 end;
 
 procedure TFormDesigner.miSaveLFMClick(Sender: TObject);
@@ -444,6 +518,8 @@ begin
 
   miBringToFront.visible:=(oid.Selection.Count>0) and (oid.selection[0] is TControl);
   miSendToBack.visible:=miBringToFront.visible;
+
+  miAnchorEditor2.Visible:=miBringToFront.visible and not (oid.selection[0] is TCustomForm);;
 
   miMenuSep.visible:=miAddSubMenu.visible;
   miMenuMoveUp.visible:=miMenuSep.visible;
@@ -581,6 +657,11 @@ begin
  // showmessage('weee');
 end;
 
+function TFormDesigner.onMethodFromLookupRoot(const Method:TMethod):boolean;
+begin
+  result:=(method.code<>nil) and (TObject(method.data) is TLuaCaller);
+end;
+
 procedure TFormDesigner.FormCreate(Sender: TObject);
 var h: TPropertyEditorHook;
   gc: TOICustomPropertyGrid;
@@ -626,6 +707,8 @@ begin
 
   GlobalDesignHook.AddHandlerRefreshPropertyValues(onRefreshPropertyValues);
 
+  GlobalDesignHook.AddHandlerMethodFromLookupRoot(OnMethodFromLookuproot);
+
   setlength(x,0);
   loadedfromsave:=loadformposition(self, x);
 
@@ -661,7 +744,10 @@ begin
   ioclass:=componentToAdd;
   componentToAdd:='';
   NoSelection.down:=true;
-  oid.OnSelectPersistentsInOI:=nil;
+
+  if ioclass<>'' then
+    oid.OnSelectPersistentsInOI:=nil;
+
 end;
 
 procedure TFormDesigner.ObjectInspectorSelectionChange(sender: tobject);
@@ -698,9 +784,10 @@ begin
             surface.Selector.AddToSelection(tcontrol(p));
         end;
 
+        if AnchorDesigner<>nil then
+          GlobalDesignHook.SetSelection(oid.Selection);
+          
         surface.onselectionchange:=designerSelectionChange;
-
-
       end;
 
     end;
@@ -732,60 +819,72 @@ begin
   if DesignerSelectionChangeCount<>0 then exit;
   DesignerSelectionChangeCount:=1;
 
-  if GlobalDesignHook=nil then exit;
+  try
 
-  surface:=TJvDesignSurface(sender);
+    if GlobalDesignHook=nil then exit;
 
-  if GlobalDesignHook.LookupRoot<>nil then
-  begin
-    if GlobalDesignHook.LookupRoot<>surface.Container then //deselect the components on the other surface
+    surface:=TJvDesignSurface(sender);
+
+    if GlobalDesignHook.LookupRoot<>nil then
     begin
-      if (TCEform(GlobalDesignHook.LookupRoot).designsurface<>nil) and (TCEform(GlobalDesignHook.LookupRoot).designsurface.Selector<>nil) then
-        TCEform(GlobalDesignHook.LookupRoot).designsurface.Selector.ClearSelection;
+      if GlobalDesignHook.LookupRoot<>surface.Container then //deselect the components on the other surface
+      begin
+        if (TCEform(GlobalDesignHook.LookupRoot).designsurface<>nil) and (TCEform(GlobalDesignHook.LookupRoot).designsurface.Selector<>nil) then
+          TCEform(GlobalDesignHook.LookupRoot).designsurface.Selector.ClearSelection;
+      end;
+
     end;
 
-  end;
+
+    GlobalDesignHook.LookupRoot:=surface.Container;
+
+    surface.OnSelectionChange:=nil;
 
 
-  GlobalDesignHook.LookupRoot:=surface.Container;
+   // sl:=TPersistentSelectionList.Create;
 
-  surface.OnSelectionChange:=nil;
-
-
- // sl:=TPersistentSelectionList.Create;
-  s:=Surface.Selected;
-  if oid<>nil then
-  begin
-
-    oid.Selection.Clear;
-    if length(s)>0 then
+    s:=Surface.Selected;
+    if oid<>nil then
     begin
-      for i:=0 to length(s)-1 do
-      begin
-        oid.Selection.Add(TPersistent(s[i]));
-       // sl.Add(TPersistent(s[i]));
-      end;
-    end
-    else
-      oid.selection.add(GlobalDesignHook.LookupRoot);
 
-    oid.RefreshSelection;
+      oid.Selection.Clear;
+      if length(s)>0 then
+      begin
+        for i:=0 to length(s)-1 do
+        begin
+          oid.Selection.Add(TPersistent(s[i]));
+         // sl.Add(TPersistent(s[i]));
+        end;
+      end
+      else
+        oid.selection.add(GlobalDesignHook.LookupRoot);
+
+      oid.RefreshSelection;
+    end;
+
+    if AnchorDesigner<>nil then
+      GlobalDesignHook.SetSelection(oid.Selection);
+
+
+    //laz 2 not needed anymore. gets it from designhook
+ //   oid.Selection.Clear;
+    //if oid.Selection.Count=1 then
+     // oid.RefreshComponentTreeSelection;
+
+    oid.RefreshPropertyValues;
+
+
+    surface.OnSelectionChange:=DesignerSelectionChange;
+
+  //  sl.free;
+
+    setFormName;
+
+
+  finally
+    DesignerSelectionChangeCount:=0;
   end;
 
-
-  oid.RefreshComponentTreeSelection;
-  oid.RefreshPropertyValues;
-
-  if AnchorDesigner<>nil then
-    GlobalDesignHook.SetSelection(oid.Selection);
-
-  surface.OnSelectionChange:=DesignerSelectionChange;
-
-//  sl.free;
-
-  setFormName;
-
-  DesignerSelectionChangeCount:=0;
 end;
 
 procedure TFormDesigner.surfaceOnChange(sender: tobject);
@@ -810,25 +909,29 @@ var f: TLuaCaller;
   old: TMethod;
 
   pn: string;
-  i: integer;
 
   NeedsToBeCreated: boolean;
   header: tstringlist;
+
+  ns: string;
 begin
   f:=TLuaCaller.create;
-  f.luaroutine:=name;
+
+  ns:=name;
+  ns:=TComponent(GlobalDesignHook.LookupRoot).name+'_'+copy(ns, RPos('.',ns)+1);
+
+  NeedsToBeCreated:=false;
+
+  if methodlist.IndexOf(name)<>-1 then
+    ns:=name
+  else
+    NeedsToBeCreated:=methodlist.IndexOf(ns)=-1;
+
+  f.luaroutine:=ns;
   f.owner:=APersistent;
 
   try
-    pn:=APropertyPath;
-    i:=pos('.',pn);
-    while i>0 do
-    begin
-      pn:=copy(pn,i+1, length(pn));
-      i:=pos('.',pn)
-    end;
-
-
+    pn:=copy(APropertyPath, RPos('.', APropertyPath)+1);
     old:=GetMethodProp(APersistent, pn);
     if (old.code<>nil) and (tobject(old.Data) is TLuaCaller) then
       TLuaCaller(old.data).free;
@@ -837,21 +940,18 @@ begin
     //failed to get the propertyname
   end;
 
-  i:=methodlist.IndexOf(name);
-  NeedsToBeCreated:=i=-1;
-
   header:=tstringlist.create;
-  result:=luacaller_getFunctionHeaderAndMethodForType(ATypeInfo, f, name, header);
+  result:=luacaller_getFunctionHeaderAndMethodForType(ATypeInfo, f, ns, header);
 
   if NeedsToBeCreated then
   begin
-    mainform.frmLuaTableScript.assemblescreen.Lines.AddStrings(header);
     header.add('');
+    mainform.frmLuaTableScript.assemblescreen.Lines.AddStrings(header);
   end;
 
   header.free;
 
-  onShowMethod(Name);
+  onShowMethod(ns);
 
 end;
 
@@ -906,7 +1006,6 @@ begin
 end;
 }
 
-{$if lcl_fullversion >= 1060400}
 function TFormDesigner.ogm(const Method: TMethod; CheckOwner: TObject; OrigLookupRoot: TPersistent): String;
 begin
   if method.code=nil then
@@ -919,20 +1018,6 @@ begin
       result:=rsInvalidObject;
   end;
 end;
-{$else}
-function TFormDesigner.ogm(const Method: TMethod; CheckOwner: TObject): String;
-begin
-  if method.code=nil then
-    result:=''
-  else
-  begin
-    if tobject(method.data) is TLuaCaller then
-      result:=TLuaCaller(method.Data).luaroutine
-    else
-      result:=rsInvalidObject;
-  end;
-end;
-{$endif}
 
 procedure TFormDesigner.UpdateMethodListIfNeeded;
 var s: string;
@@ -1101,7 +1186,9 @@ var x: array of integer;
   i: integer;
   dpmi: tmenuitem;
 begin
+
   GlobalDesignHook.LookupRoot:=f;
+
 
   setFormName;
 
@@ -1214,10 +1301,27 @@ begin
   end;
 
 
-  f.active:=true;
+  oid.Selection.Clear;
+  oid.Selection.Add(f);
 
+  oid.Refresh;
+
+
+
+  f.active:=true;
   f.designsurface.PopupMenu:=controlPopup;
   f.show;
+
+
+
+  TCEForm(GlobalDesignHook.LookupRoot).designsurface.Change;
+  oid.ComponentTree.RebuildComponentNodes;
+
+  oid.RefreshPropertyValues;
+  oid.RebuildPropertyLists;
+  oid.FillComponentList;
+  oid.UpdateComponentValues;
+
 end;
 
 

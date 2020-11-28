@@ -17,7 +17,7 @@ procedure CreateByteTableFromPointer(L: PLua_state; p: pbytearray; size: integer
 
 implementation
 
-uses luahandler;
+uses luahandler, frmFloatingPointPanelUnit{$ifdef darwin},mactypes{$endif};
 
 procedure CreateByteTableFromPointer(L: PLua_state; p: pbytearray; size: integer );
 var t,i: integer;
@@ -117,6 +117,29 @@ begin
   end;
 end;
 
+function extendedToByteTable(L: PLua_state): integer; cdecl;
+var
+  v: double;
+  e: Extended;
+  ex: array [0..9] of byte;
+
+begin
+  result:=0;
+  if lua_gettop(L)=1 then
+  begin
+    v:=lua_tonumber(L, 1);
+{$ifdef cpu64}
+    doubletoextended(@v,@ex[0]);
+    CreateByteTableFromPointer(L, @ex[0], 10);
+{$else}
+    e:=v;
+    CreateByteTableFromPointer(L, @e, sizeof(e));
+{$endif}
+
+    result:=1;
+  end;
+end;
+
 function stringToByteTable(L: PLua_state): integer; cdecl;
 var s: pchar;
   len: size_t;
@@ -146,13 +169,17 @@ begin
 end;
 
 function byteTableToWord(L: PLua_state): integer; cdecl;
-var v: word;
+var
+  v: word;
 begin
   result:=0;
-  if lua_gettop(L)=1 then
+  if lua_gettop(L)>=1 then
   begin
     readBytesFromTable(L, 1, @v, sizeof(v));
-    lua_pushinteger(L,v);
+    if (lua_gettop(L)>=2) and lua_toboolean(L,2) then
+      lua_pushinteger(L,smallint(v))
+    else
+      lua_pushinteger(L,v);
     result:=1;
   end;
 end;
@@ -161,10 +188,14 @@ function byteTableToDWord(L: PLua_state): integer; cdecl;
 var v: dword;
 begin
   result:=0;
-  if lua_gettop(L)=1 then
+  if lua_gettop(L)>=1 then
   begin
     readBytesFromTable(L, 1, @v, sizeof(v));
-    lua_pushinteger(L,v);
+    if (lua_gettop(L)>=2) and lua_toboolean(L,2) then
+      lua_pushinteger(L,integer(v))
+    else
+      lua_pushinteger(L,v);
+
     result:=1;
   end;
 end;
@@ -193,13 +224,38 @@ begin
   end;
 end;
 
+
+
 function byteTableToDouble(L: PLua_state): integer; cdecl;
-var v: double;
+var v: Double;
 begin
   result:=0;
   if lua_gettop(L)=1 then
   begin
     readBytesFromTable(L, 1, @v, sizeof(v));
+    lua_pushnumber(L,v);
+    result:=1;
+  end;
+end;
+
+
+function byteTableToExtended(L: PLua_state): integer; cdecl;
+var
+  ex: array [0..9] of byte;
+  v: double;
+  e: extended;
+begin
+  result:=0;
+  if lua_gettop(L)=1 then
+  begin
+
+{$ifdef cpu64}
+    readBytesFromTable(L, 1, @ex[0], 10);
+    extendedtodouble(@ex[0],v);
+{$else}
+    readBytesFromTable(L, 1, @e, sizeof(e));
+    v:=e;
+{$endif}
     lua_pushnumber(L,v);
     result:=1;
   end;
@@ -255,6 +311,7 @@ begin
 
   lua_register(LuaVM, 'floatToByteTable', floatToByteTable);
   lua_register(LuaVM, 'doubleToByteTable', doubleToByteTable);
+  lua_register(LuaVM, 'extendedToByteTable', extendedToByteTable);
   lua_register(LuaVM, 'stringToByteTable', stringToByteTable);
   lua_register(LuaVM, 'wideStringToByteTable', wideStringToByteTable);
 
@@ -263,6 +320,7 @@ begin
   lua_register(LuaVM, 'byteTableToQword', byteTableToQword);
   lua_register(LuaVM, 'byteTableToFloat', byteTableToFloat);
   lua_register(LuaVM, 'byteTableToDouble', byteTableToDouble);
+  lua_register(LuaVM, 'byteTableToExtended', byteTableToExtended);
   lua_register(LuaVM, 'byteTableToString', byteTableToString);
   lua_register(LuaVM, 'byteTableToWideString', byteTableToWideString);
 

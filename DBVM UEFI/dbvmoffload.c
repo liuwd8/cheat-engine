@@ -240,7 +240,7 @@ void InitializeDBVM(UINT64 vmm, int vmmsize)
   GDTBase[9 ]=0;            //72:  ^   ^   ^
   //GDTBase[10]=0x00a09e0000000000ULL;  //80: 64-bit code
   GDTBase[10]=0x00af9b000000ffffULL;  //80: 64-bit code
-  GDTBase[11]=0;            //88:  ^   ^   ^
+  GDTBase[11]=0x00cf9b000000ffffULL;  //88: 32-bit code compat mode
   GDTBase[12]=0;            //96: 64-bit tss descriptor (2)
   GDTBase[13]=0;            //104: ^   ^   ^
 
@@ -318,8 +318,8 @@ void InitializeDBVM(UINT64 vmm, int vmmsize)
     initvars->nextstack=0x00400000+(mainstack-vmm)+(16*4096)-0x40;
 
     address=0;
-    s=AllocatePages(AllocateAnyPages,EfiRuntimeServicesData, 16384,&address); //64MB of memory
-    if (s!=EFI_SUCCESS)
+    s=AllocatePages(AllocateAnyPages,EfiRuntimeServicesCode, 16384,&address); //64MB of memory
+    if (s==EFI_SUCCESS)
     {
       Print(L"Allocated 64MB of extra ram at %lx\n", address);
       initvars->extramemory=address;
@@ -327,9 +327,13 @@ void InitializeDBVM(UINT64 vmm, int vmmsize)
     }
     else
     {
+      Print(L"Failed to allocate extra ram\n");
       initvars->extramemory=0;
       initvars->extramemorysize=0;
     }
+    char something[201];
+
+    Input(L"Type something : ", something, 200);
 
 
 
@@ -464,7 +468,7 @@ void LaunchDBVM()
    }
 
    Print(L"Storing original state\n");
-   originalstate->cpucount=0;  //indicate that dbvm needs to initialize the secondary CPU's
+   originalstate->cpucount=cpucount;  //0 will indicate that dbvm needs to initialize the secondary CPU's
    //Print(L"originalstate->cpucount=%d",originalstate->cpucount);
 
    originalstate->originalEFER=readMSR(0xc0000080); //amd prefers this over an LME
@@ -630,6 +634,13 @@ void LaunchDBVM()
       UINT64 dbvmversion=dovmcall(&vmcallinfo, 0x76543210);
       int r;
 
+      vmcallinfo.structsize=sizeof(vmcallinfo);
+      vmcallinfo.level2pass=0xfedcba98;
+      vmcallinfo.command=38; //VMCALL_GETMEM
+      UINT64 freemem,fullpages;
+      dovmcall2(&vmcallinfo, 0x76543210, &freemem,&fullpages);
+
+
       disableInterrupts();
       r=doSystemTest(); //check if the system behaves like it should
       enableInterrupts();
@@ -641,13 +652,11 @@ void LaunchDBVM()
 
 
 
-      Print(L"still alive\ndbvmversion=%x\n", dbvmversion);
+      Print(L"still alive\ndbvmversion=%x\nfreemem=%d (fullpages=%d)", dbvmversion, freemem, fullpages);
     }
 
     //DbgPrint("cpunr=%d\n",cpunr());
 
 
-    Input(L"Type something : ", something, 200);
-    Print(L"Returning\n");
 
 }

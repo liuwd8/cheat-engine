@@ -5,12 +5,18 @@ unit trainergenerator;
 interface
 
 uses
-  windows, Classes, SysUtils, FileUtil, LResources, Forms, Controls, Graphics,
+  {$ifdef darwin}
+  macport,
+  {$endif}
+  {$ifdef windows}
+  windows,
+  {$endif}
+  Classes, SysUtils, FileUtil, LResources, Forms, Controls, Graphics,
   Dialogs, ceguicomponents, lclintf, StdCtrls, EditBtn, ExtCtrls, ExtDlgs,
-  ComCtrls, Buttons, Menus, ExtraTrainerComponents, cefuncproc, HotkeyHandler,
+  ComCtrls, Buttons, Menus, ExtraTrainerComponents, CEFuncProc, HotkeyHandler,
   HotKeys, symbolhandler, luacaller, formdesignerunit, opensave, luafile,
   frmAdConfigUnit, cesupport, IconStuff, memoryrecordunit, frmSelectionlistunit,
-  mainunit2, lua, luahandler, commonTypeDefs;
+  MainUnit2, lua, luahandler, commonTypeDefs, math;
 
 type
   TTrainerForm=class(TCEForm)
@@ -47,7 +53,7 @@ type
     edtPopupHotkey: TEdit;
     fnXM: TFileNameEdit;
     GroupBox2: TGroupBox;
-    ImageList1: TImageList;
+    tgImageList: TImageList;
     Label1: TLabel;
     Label2: TLabel;
     Label3: TLabel;
@@ -522,8 +528,8 @@ begin
 
   playbitmap:=TBitmap.Create;
   stopbitmap:=TBitmap.Create;
-  ImageList1.GetBitmap(0, playbitmap);
-  ImageList1.GetBitmap(1, stopbitmap);
+  tgImageList.GetBitmap(0, playbitmap);
+  tgImageList.GetBitmap(1, stopbitmap);
 
   sbPlayStopXM.Glyph:=playbitmap;
 end;
@@ -848,7 +854,7 @@ end;
 
 
 procedure TfrmTrainerGenerator.Button1Click(Sender: TObject);
-var hi: HICON;
+var
   i: integer;
 
 

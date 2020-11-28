@@ -5,7 +5,7 @@ unit symbolconfigunit;
 interface
 
 uses
-  LCLIntf, Messages, SysUtils, Classes, Graphics, Controls, Forms,
+  LCLIntf, Messages, LMessages, SysUtils, Classes, Graphics, Controls, Forms,
   Dialogs, StdCtrls,symbolhandler, symbolhandlerstructs, ComCtrls, ExtCtrls,
   Menus, LResources;
 
@@ -15,6 +15,7 @@ type
 
   TfrmSymbolhandler = class(TForm)
     edtSymbolname: TEdit;
+    scImageList: TImageList;
     Label3: TLabel;
     MenuItem1: TMenuItem;
     Panel1: TPanel;
@@ -28,6 +29,7 @@ type
     PopupMenu1: TPopupMenu;
     Delete1: TMenuItem;
     procedure edtSymbolnameChange(Sender: TObject);
+    procedure FormDestroy(Sender: TObject);
     procedure FormShow(Sender: TObject);
     procedure Button1Click(Sender: TObject);
     procedure ListView1Click(Sender: TObject);
@@ -49,7 +51,7 @@ var
 
 implementation
 
-uses MemoryBrowserFormUnit;
+uses MemoryBrowserFormUnit, cefuncproc;
 
 resourcestring
   rsAreYouSureYouWantToRemoveThisSymbolFromTheList = 'Are you sure you want to remove this symbol from the list?';
@@ -110,6 +112,11 @@ begin
 
 end;
 
+procedure TfrmSymbolhandler.FormDestroy(Sender: TObject);
+begin
+  SaveFormPosition(self);
+end;
+
 procedure TfrmSymbolhandler.Button1Click(Sender: TObject);
 var symbolname:string;
     address: dword;
@@ -147,6 +154,7 @@ end;
 procedure TfrmSymbolhandler.FormCreate(Sender: TObject);
 begin
   symhandler.RegisterUserdefinedSymbolCallback(@symbolupdate);
+  LoadFormPosition(self);
 end;
 
 procedure TfrmSymbolhandler.Delete1Click(Sender: TObject);

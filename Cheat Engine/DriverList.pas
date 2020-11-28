@@ -5,8 +5,11 @@ unit DriverList;
 interface
 
 uses
-  jwaWindows, windows, LCLIntf, Messages, SysUtils, Variants, Classes, Graphics,
-  Controls, Forms, Dialogs, StdCtrls, Menus, imagehlp, CEFuncProc,
+  {$ifdef windows}
+  jwaWindows, windows, imagehlp,
+  {$endif}
+  LCLIntf, Messages, SysUtils, Variants, Classes, Graphics,
+  Controls, Forms, Dialogs, StdCtrls, Menus, CEFuncProc,
   NewKernelHandler, LREsources, ComCtrls, registry;
 
 resourcestring
@@ -20,6 +23,7 @@ type
     Button1: TButton;
     FindDialog1: TFindDialog;
     FindDialog2: TFindDialog;
+    dlImageList: TImageList;
     MenuItem1: TMenuItem;
     PopupMenu1: TPopupMenu;
     Find1: TMenuItem;
@@ -220,7 +224,7 @@ var
   tn: TTreenode;
 begin
 
-
+  {$ifdef windows}
   if (node.level=0) and (node.count=0) then
   begin
     //get the exportlist
@@ -253,6 +257,7 @@ begin
 
     freemem(p);
   end;
+  {$endif}
 end;
 
 initialization

@@ -5,19 +5,25 @@ unit DPIHelper;
 interface
 
 uses
-  Windows, Classes, controls, comctrls, SysUtils, Buttons, Graphics, forms, StdCtrls;
+  {$ifdef darwin}
+  macport, math,
+  {$endif}
+  {$ifdef windows}
+  Windows,
+  {$endif}Classes, controls, comctrls, SysUtils, Buttons, Graphics, forms, StdCtrls;
 
 procedure AdjustSpeedButtonSize(sb: TSpeedButton);
 procedure AdjustToolbar(tb: TToolbar);
+procedure AdjustImageList(il: TImageList);
 procedure AdjustComboboxSize(cb: TComboBox; canvas: TCanvas);
-procedure AdjustEditBoxSize(editbox: TEdit; mintextwidth: integer);
-function GetEditBoxMargins(editbox: TEdit): integer;
+procedure AdjustEditBoxSize(editbox: TCustomEdit; mintextwidth: integer);
+function GetEditBoxMargins(editbox: TCustomEdit): integer;
 
 function getDPIScaleFactor: single;
 
 implementation
 
-uses globals, win32proc;
+uses globals{$ifdef windows}, win32proc{$endif};
 
 const
   designtimedpi=96;
@@ -27,18 +33,20 @@ begin
   result:=screen.PixelsPerInch/designtimedpi;
 end;
 
-function GetEditBoxMargins(editbox: TEdit): integer;
+function GetEditBoxMargins(editbox: TCustomEdit): integer;
 var m: dword;
 begin
+  {$ifdef windows}
   if WindowsVersion>=wvVista then
     m:=sendmessage(editbox.Handle, EM_GETMARGINS, 0,0)
   else
+  {$endif}
     m:=10;
 
   result:=(m shr 16)+(m and $ffff);
 end;
 
-procedure AdjustEditBoxSize(editbox: TEdit; mintextwidth: integer);
+procedure AdjustEditBoxSize(editbox: TCustomEdit; mintextwidth: integer);
 var marginsize: integer;
 begin
   marginsize:=GetEditBoxMargins(editbox);
@@ -47,7 +55,9 @@ end;
 
 procedure AdjustComboboxSize(cb: TComboBox; canvas: TCanvas);
 var
+  {$ifdef windows}
   cbi: TComboboxInfo;
+  {$endif}
   i: integer;
   s: string;
   maxwidth: integer;
@@ -61,6 +71,7 @@ begin
     maxwidth:=max(maxwidth, Canvas.TextWidth(s));
   end;
 
+  {$ifdef windows}
   cbi.cbSize:=sizeof(cbi);
   if GetComboBoxInfo(cb.Handle, @cbi) then
   begin
@@ -69,6 +80,7 @@ begin
     w:=cb.width+i;
   end
   else
+  {$endif}
     w:=maxwidth+16;
 
   cb.width:=w;
@@ -112,6 +124,19 @@ begin
     TempBmp1.Free;
     TempBmp2.Free;
   end;
+end;
+
+procedure AdjustImageList(il: TImageList);
+begin
+  if (screen.PixelsPerInch<>designtimedpi) then
+  begin
+    ScaleImageList(il, scalex(il.Height, designtimedpi), scaley(il.width,designtimedpi));
+  end
+  else
+  begin
+    ScaleImageList(il, trunc(il.Height*fontmultiplication), trunc(il.Width*fontmultiplication));
+  end;
+
 end;
 
 procedure AdjustToolbar(tb: TToolbar);

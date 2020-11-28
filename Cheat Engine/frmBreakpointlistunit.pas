@@ -5,9 +5,9 @@ unit frmBreakpointlistunit;
 interface
 
 uses
-  LCLIntf, Messages, SysUtils, Classes, Graphics, Controls, Forms, Dialogs,
+  LCLIntf, Messages, LMessages, LCLType, SysUtils, Classes, Graphics, Controls, Forms, Dialogs,
   StdCtrls, CEDebugger, KernelDebugger, ExtCtrls, LResources, ComCtrls, Menus,
-  debuggertypedefinitions;
+  debuggertypedefinitions, BreakpointTypeDef;
 
 const
   WM_BPUPDATE=WM_USER+1;
@@ -16,6 +16,7 @@ type
   { TfrmBreakpointlist }
 
   TfrmBreakpointlist = class(TForm)
+    bplImageList: TImageList;
     ListView1: TListView;
     MenuItem1: TMenuItem;
     MenuItem2: TMenuItem;
@@ -178,6 +179,8 @@ var
 
   dbvmbpinfo: tdbvmbpinfo;
 begin
+  if (listview1.selected=nil) then exit;
+  
   bp:=listview1.selected.data;
   if bp=pointer(-1) then
   begin

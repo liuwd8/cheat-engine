@@ -1,8 +1,9 @@
-c=createComboBox(MainForm.gbScanOptions)
+local c=createComboBox(MainForm.gbScanOptions)
 
 c.Style='csDropDownList'
 c.Items.add('All')
 c.ItemIndex=0
+c.Name='ScanOptionsModuleList'  
 
 
 c.Align=alTop
@@ -12,17 +13,30 @@ c.BorderSpacing.Bottom=2
 
 local modulelist
 
-c.OnDropDown=function(d)
-  --fill the list
+function FillList()
   while c.Items.Count>1 do
     c.Items.delete(1)
   end
 
   modulelist=enumModules()
-  local i
-  for i=1, #modulelist do
-    c.Items.Add(modulelist[i].Name)
+  if modulelist then
+    local i
+    for i=1, #modulelist do
+      c.Items.Add(modulelist[i].Name)
+    end
   end
+end
+
+c.OnMouseEnter=function(d)  
+  if c.Items.Count<=1 then
+    --print("enter")
+    FillList()
+    c.ItemIndex=0
+  end
+end
+
+c.OnDropDown=function(d)
+  FillList()
 end
 
 c.OnSelect=function(d)

@@ -5,6 +5,9 @@ unit frmReferencedStringsUnit;
 interface
 
 uses
+  {$ifdef darwin}
+  macport,
+  {$endif}
   LCLIntf, Messages, SysUtils, Classes, Graphics, Controls, Forms,
   Dialogs, ComCtrls, ExtCtrls, StdCtrls, syncobjs, CEFuncProc, NewKernelHandler,
   math, Menus, LResources;
@@ -24,6 +27,7 @@ type
   { TfrmReferencedStrings }
 
   TfrmReferencedStrings = class(TForm)
+    rsImageList: TImageList;
 
     lvStringlist: TListView;
     lbReflist: TListBox;

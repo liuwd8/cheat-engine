@@ -5,7 +5,7 @@ unit Unit9;
 interface
 
 uses
-  windows, LCLIntf, Messages, SysUtils, Classes, Graphics, Controls, Forms,
+  {$ifdef windows}windows, {$endif}LCLIntf, Messages, SysUtils, Classes, Graphics, Controls, Forms,
   Dialogs, StdCtrls, Buttons, LResources;
 
 type
@@ -86,7 +86,7 @@ var
 
 implementation
 
-uses Unit4, Unit10;
+uses Unit4, Unit10, frmHelpUnit;
 
 resourcestring
   rsStep8MultilevelPointersPW = 'Step 8: Multilevel pointers: (PW=%s)';
@@ -133,12 +133,12 @@ begin
   //just adding some more chaos:
   if (basepointer<>nil) then
   begin
-    zeromemory(basepointer.p.p.p,sizeof(TLevel4));
-    zeromemory(basepointer.p.p,sizeof(TLevel3));
+    FillChar(basepointer.p.p.p^, sizeof(TLevel4),0); //zeromemory(basepointer.p.p.p,sizeof(TLevel4));
+    FillChar(basepointer.p.p^,sizeof(TLevel3), 0); //zeromemory(basepointer.p.p,sizeof(TLevel3));
     freemem(basepointer.p.p);
-    zeromemory(basepointer.p,sizeof(TLevel2));
+    FillChar(basepointer.p^,sizeof(TLevel2),0); //zeromemory(basepointer.p,sizeof(TLevel2));
     freemem(basepointer.p);
-    zeromemory(basepointer,sizeof(TLevel1));
+    FillChar(basepointer^,sizeof(TLevel1), 0); //zeromemory(basepointer,sizeof(TLevel1));
     //delete a chunk inbetween if emptying wasn't enough already
 
   end;
@@ -189,6 +189,7 @@ begin
   memo1.Lines.Insert(0, Format(rsStep8MultilevelPointersPW, [inttostr(525)+inttostr(927)]));
   memo1.SelStart:=0;
   font.size:=12;
+  frmHelp.attach(self,'8');
 end;
 
 procedure TForm9.Button1Click(Sender: TObject);

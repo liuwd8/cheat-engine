@@ -5,14 +5,26 @@ unit FoundCodeUnit;
 interface
 
 uses
-  windows, LCLIntf, LResources, Messages, SysUtils, Variants, Classes, Graphics,
+  {$ifdef darwin}
+  macport, math,
+  {$endif}
+  {$ifdef windows}
+  windows,
+  {$endif}
+  LCLIntf, LResources, Messages, SysUtils, Variants, Classes, Graphics,
   Controls, Forms, Dialogs, StdCtrls, disassembler, ExtCtrls, Menus,
   NewKernelHandler, clipbrd, ComCtrls, fgl, formChangedAddresses, LastDisassembleData,
   vmxfunctions;
 
 type
   Tcoderecord = class
+  private
+    fhitcount: integer;
+    procedure setHitcount(c: integer);
   public
+    firstSeen: TDateTime;
+    lastSeen: TDateTime;
+    addressString: string;
     address: ptrUint;
     size: integer;
     opcode: string;
@@ -27,11 +39,13 @@ type
 
     dbvmcontextbasic:    PPageEventBasic;
 
-    hitcount: integer;
+
     diffcount: integer;
     LastDisassembleData: TLastDisassembleData;
 
     formChangedAddresses: TfrmChangedAddresses;
+
+    property hitcount: integer read fhitcount write setHitcount;
     procedure savestack;
     constructor create;
     destructor destroy; override;
@@ -42,6 +56,7 @@ type
   { TFoundCodeDialog }
   TFoundCodeDialog=class;
 
+  {$ifdef windows}
   TDBVMWatchPollThread=class(TThread)
   private
     results: PPageEventListDescriptor;
@@ -54,10 +69,13 @@ type
     fcd: TfoundCodeDialog;
     procedure execute; override;
   end;
+  {$endif}
 
 
   TFoundCodeDialog = class(TForm)
     FoundCodeList: TListView;
+    fcdImageList: TImageList;
+    dbvmMissedEntries: TLabel;
     MenuItem1: TMenuItem;
     MenuItem2: TMenuItem;
     miFindWhatAccesses: TMenuItem;
@@ -82,6 +100,7 @@ type
     N1: TMenuItem;
     Copyselectiontoclipboard1: TMenuItem;
     Splitter1: TSplitter;
+    timerAddressStringLookup: TTimer;
     procedure FormCreate(Sender: TObject);
     procedure FormDeactivate(Sender: TObject);
     procedure FormDestroy(Sender: TObject);
@@ -94,6 +113,7 @@ type
     procedure btnReplacewithnopsClick(Sender: TObject);
     procedure btnOpenDisassemblerClick(Sender: TObject);
     procedure btnAddToCodeListClick(Sender: TObject);
+    procedure FoundCodeListColumnClick(Sender: TObject; Column: TListColumn);
     procedure FoundcodeListDblClick(Sender: TObject);
     procedure btnExtraInfoClick(Sender: TObject);
     procedure FormCloseQuery(Sender: TObject; var CanClose: Boolean);
@@ -104,13 +124,19 @@ type
     procedure miSaveTofileClick(Sender: TObject);
     procedure pmOptionsPopup(Sender: TObject);
     procedure Copyselectiontoclipboard1Click(Sender: TObject);
+    procedure timerAddressStringLookupTimer(Sender: TObject);
   private
     { Private declarations }
     setcountwidth: boolean;
     fdbvmwatchid: integer;
+    {$ifdef windows}
     dbvmwatchpollthread: TDBVMWatchPollThread;
+    {$endif}
 
     usedmiFindWhatAccesses: boolean; //debug
+
+    countsortdirection: integer;
+    addresssortdirection: integer;
     procedure stopdbvmwatch;
     procedure addInfo(Coderecord: TCoderecord);
     procedure moreinfo;
@@ -142,10 +168,11 @@ implementation
 
 uses CEFuncProc, CEDebugger,debughelper, debugeventhandler, MemoryBrowserFormUnit,
      MainUnit,kerneldebugger, AdvancedOptionsUnit ,formFoundcodeListExtraUnit,
-     MainUnit2, ProcessHandlerUnit, Globals, Parsers, DBK32functions;
+     MainUnit2, ProcessHandlerUnit, Globals, Parsers, DBK32functions, symbolhandler;
 
 
 
+{$IFDEF windows}
 procedure TDBVMWatchPollThread.execute;
 var
   i: integer;
@@ -163,14 +190,14 @@ begin
       i:=dbvm_watch_retrievelog(id, results, size);
       if i=0 then
       begin
-        OutputDebugString('TDBVMWatchPollThread returned 0');
-        OutputDebugString('results^.numberOfEntries='+inttostr(results^.numberOfEntries));
-        OutputDebugString('results^.maxSize='+inttostr(results^.maxSize));
+      //  OutputDebugString('TDBVMWatchPollThread returned 0');
+      //  OutputDebugString('results^.numberOfEntries='+inttostr(results^.numberOfEntries));
+      //  OutputDebugString('results^.maxSize='+inttostr(results^.maxSize));
 
         //process data
         if results^.numberOfEntries>0 then
         begin
-          OutputDebugString('calling addEntriesToList');
+      //    OutputDebugString('calling addEntriesToList');
           synchronize(addEntriesToList);
           sleep(10);
         end
@@ -181,7 +208,7 @@ begin
       if i=2 then
       begin
         //not enough memory. Allocate twice the needed amount
-        outputdebugstring(inttostr(resultsize)+' is too small for the buffer. It needs to be at least '+inttostr(size));
+     //   outputdebugstring(inttostr(resultsize)+' is too small for the buffer. It needs to be at least '+inttostr(size));
         freememandnil(results);
 
 
@@ -206,6 +233,7 @@ begin
   freememandnil(results);
   freeandnil(cr3disassembler);
 end;
+{$ENDIF}
 
 destructor TCodeRecord.Destroy;
 begin
@@ -221,8 +249,11 @@ end;
 constructor TCodeRecord.create;
 begin
   formChangedAddresses:=nil;
+  firstseen:=now;
 end;
 
+
+{$IFDEF windows}
 procedure TDBVMWatchPollThread.addEntriesToList;
 var
   coderecord: TCodeRecord;
@@ -245,6 +276,14 @@ var
   debug,debug2: pointer;
 begin
   outputdebugstring('addEntriesToList');
+
+  if results^.missedEntries>0 then
+  begin
+    fcd.dbvmMissedEntries.caption:=string.format(rsDBVMMissedEntries, [results^.missedEntries]);
+    if fcd.dbvmMissedEntries.visible=false then
+      fcd.dbvmMissedEntries.visible:=true;
+  end;
+
 
   try
     basic:=PPageEventBasicArray(ptruint(results)+sizeof(TPageEventListDescriptor));
@@ -297,7 +336,8 @@ begin
                (basicinfo.R14=TCodeRecord(fcd.foundcodelist.Items[j].data).dbvmcontextbasic^.R14) and
                (basicinfo.R15=TCodeRecord(fcd.foundcodelist.Items[j].data).dbvmcontextbasic^.R15) THEN
             begin
-              inc(TCodeRecord(fcd.foundcodelist.Items[j].data).hitcount, basicinfo.Count);
+              TCodeRecord(fcd.foundcodelist.Items[j].data).hitcount:=TCodeRecord(fcd.foundcodelist.Items[j].data).hitcount+basicinfo.count;
+
               skip:=true;
               break;
             end;
@@ -438,6 +478,13 @@ begin
       outputdebugstring('TDBVMWatchPollThread.addEntriesToList error: '+e.message);
   end;
 end;
+{$ENDIF}
+
+procedure TCodeRecord.setHitcount(c: integer);
+begin
+  fHitcount:=c;
+  lastSeen:=now;
+end;
 
 procedure TCodeRecord.savestack;
 var base: qword;
@@ -516,7 +563,7 @@ begin
       if TCodeRecord(foundcodelist.Items[i].data).address=address then
       begin
         //it's already in the list
-        inc(TCodeRecord(foundcodelist.Items[i].data).hitcount);
+        TCodeRecord(foundcodelist.Items[i].data).hitcount:=TCodeRecord(foundcodelist.Items[i].data).hitcount+1;
         if miFindWhatAccesses.checked then
           FoundcodeList.items[i].caption:=inttostr(TCodeRecord(foundcodelist.Items[i].data).hitcount)+' ('+inttostr(TCodeRecord(foundcodelist.Items[i].data).diffcount)+')'
         else
@@ -551,12 +598,14 @@ end;
 
 procedure TFoundCodeDialog.stopdbvmwatch;
 begin
+  {$IFDEF windows}
   if dbvmwatchpollthread<>nil then
   begin
     dbvmwatchpollthread.Terminate;
     dbvmwatchpollthread.WaitFor;
     freeandnil(dbvmwatchpollthread);
   end;
+
 
   if dbvmwatchid<>-1 then
   begin
@@ -569,10 +618,12 @@ begin
     UnlockMemory(dbvmwatch_unlock);
     dbvmwatch_unlock:=0;
   end;
+  {$endif}
 end;
 
 procedure TFoundCodedialog.setdbvmwatchid(id: integer);
 begin
+  {$IFDEF windows}
   fdbvmwatchid:=id;
 
   if id<>-1 then
@@ -587,6 +638,7 @@ begin
 
     useexceptions:=true;
   end;
+  {$ENDIF}
 end;
 
 
@@ -640,6 +692,8 @@ begin
 
   minfo.Lines.BeginUpdate;
   try
+    if coderecord.addressString<>'' then minfo.Lines.add(coderecord.addressString+':');
+
     minfo.Lines.Add(disassembled[1]);
     minfo.Lines.Add(disassembled[2]);
     minfo.Lines.Add(disassembled[3]+' <<');
@@ -701,6 +755,10 @@ begin
 
     minfo.lines.add('');
     minfo.lines.add('');
+
+    minfo.lines.add('First seen:'+TimeToStr(coderecord.firstSeen));
+    minfo.lines.add('Last seen:'+TimeToStr(coderecord.lastSeen));
+
 
 
   finally
@@ -767,12 +825,14 @@ begin
 
 
     address:=coderecord.address;
+    {$IFDEF windows}
     if coderecord.dbvmcontextbasic<>nil then
     begin
       d:=TCR3Disassembler.Create;
       TCR3Disassembler(d).CR3:=coderecord.dbvmcontextbasic^.CR3;
     end
     else
+    {$ENDIF}
       d:=TDisassembler.Create;
 
 
@@ -835,8 +895,8 @@ begin
 
     with FormFoundCodeListExtra do
     begin
-      Label1.Caption:=disassembled[1].s;
-      Label1.tag:=disassembled[1].a;
+      dbvmMissedEntries.Caption:=disassembled[1].s;
+      dbvmMissedEntries.tag:=disassembled[1].a;
 
       Label2.Caption:=disassembled[2].s;
       Label2.tag:=disassembled[2].a;
@@ -975,6 +1035,9 @@ begin
           lblR8.OnMouseDown:=registerMouseDown;
           lblR8.OnDblClick:=RegisterDblClick;
           lblR8.Align:=lblrcx.Align;
+          lblR8.Color:=lblRAX.Color;
+          lblR8.Name:='lblR8';
+
 
 
           lblR9:=tlabel.Create(FormFoundCodeListExtra);
@@ -983,6 +1046,8 @@ begin
           lblR9.OnMouseDown:=registerMouseDown;
           lblR9.OnDblClick:=RegisterDblClick;
           lblR9.Align:=lblrcx.Align;
+          lblR9.Color:=lblRAX.Color;
+
 
           lblR10:=tlabel.Create(FormFoundCodeListExtra);
           lblR10.caption:='R10='+IntToHex(coderecord.context.r10,8);
@@ -990,6 +1055,8 @@ begin
           lblR10.OnMouseDown:=registerMouseDown;
           lblR10.OnDblClick:=RegisterDblClick;
           lblR10.Align:=lblrcx.Align;
+          lblR10.Color:=lblRAX.Color;
+
 
           lblR11:=tlabel.Create(FormFoundCodeListExtra);
           lblR11.caption:='R11='+IntToHex(coderecord.context.r11,8);
@@ -997,6 +1064,8 @@ begin
           lblR11.OnMouseDown:=registerMouseDown;
           lblR11.OnDblClick:=RegisterDblClick;
           lblR11.Align:=lblrcx.Align;
+          lblR11.Color:=lblRAX.Color;
+
 
           lblR12:=tlabel.Create(FormFoundCodeListExtra);
           lblR12.caption:='R12='+IntToHex(coderecord.context.r12,8);
@@ -1004,6 +1073,8 @@ begin
           lblR12.OnMouseDown:=registerMouseDown;
           lblR12.OnDblClick:=RegisterDblClick;
           lblR12.Align:=lblrcx.Align;
+          lblR12.Color:=lblRAX.Color;
+
 
           lblR13:=tlabel.Create(FormFoundCodeListExtra);
           lblR13.caption:='R13='+IntToHex(coderecord.context.r13,8);
@@ -1011,6 +1082,8 @@ begin
           lblR13.OnMouseDown:=registerMouseDown;
           lblR13.OnDblClick:=RegisterDblClick;
           lblR13.Align:=lblrcx.Align;
+          lblR13.Color:=lblRAX.Color;
+
 
           lblR14:=tlabel.Create(FormFoundCodeListExtra);
           lblR14.caption:='R14='+IntToHex(coderecord.context.r14,8);
@@ -1018,6 +1091,9 @@ begin
           lblR14.OnMouseDown:=registerMouseDown;
           lblR14.OnDblClick:=RegisterDblClick;
           lblR14.Align:=lblrcx.Align;
+          lblR14.Color:=lblRAX.Color;
+
+
 
           lblR15:=tlabel.Create(FormFoundCodeListExtra);
           lblR15.caption:='R15='+IntToHex(coderecord.context.r15,8);
@@ -1025,6 +1101,9 @@ begin
           lblR15.OnMouseDown:=registerMouseDown;
           lblR15.OnDblClick:=RegisterDblClick;
           lblR15.Align:=lblrcx.Align;
+          lblR15.Color:=lblRAX.Color;
+
+
 
           lblRBP.BringToFront;
           lblRSP.BringToFront;
@@ -1197,6 +1276,9 @@ begin
   end;
 
   fdbvmwatchid:=-1;
+
+  countsortdirection:=1;
+  addresssortdirection:=1;
 end;
 
 procedure TFoundCodeDialog.FormDeactivate(Sender: TObject);
@@ -1338,6 +1420,7 @@ end;
 procedure TFoundCodeDialog.btnAddToCodeListClick(Sender: TObject);
 var i: integer;
     coderecord: TCodeRecord;
+    added: boolean=false;
 begin
 
   for i:=0 to foundcodelist.items.count-1 do
@@ -1345,10 +1428,42 @@ begin
     if foundcodelist.items[i].Selected then
     begin
       coderecord:=TcodeRecord(foundcodelist.items[i].data);
-      advancedoptions.AddToCodeList(coderecord.address,coderecord.size,false, foundcodelist.SelCount>1);
+      if advancedoptions.AddToCodeList(coderecord.address,coderecord.size,false, foundcodelist.SelCount>1) then
+        added:=true;
     end;
   end;
-  advancedoptions.Show;
+
+  if added then
+    advancedoptions.Show;
+
+end;
+
+function SortByAddress(Item1, Item2: TListItem; AOptionalParam: PtrInt): Integer stdcall;
+begin
+  result:=AOptionalParam*(TcodeRecord(Item1.data).address-TcodeRecord(Item2.data).address);
+
+end;
+
+function SortByCount(Item1, Item2: TListItem; AOptionalParam: PtrInt): Integer stdcall;
+begin
+  result:=AOptionalParam*(TcodeRecord(Item2.data).hitcount-TcodeRecord(Item1.data).hitcount);
+end;
+
+procedure TFoundCodeDialog.FoundCodeListColumnClick(Sender: TObject; Column: TListColumn);
+begin
+  case column.index of
+    0:
+    begin
+      FoundcodeList.CustomSort(SortByCount,countsortdirection);
+      countsortdirection:=countsortdirection*-1;
+    end;
+
+    1:
+    begin
+      FoundcodeList.CustomSort(SortByAddress,addresssortdirection);
+      addresssortdirection:=addresssortdirection*-1;
+    end;
+  end;
 end;
 
 procedure TFoundCodeDialog.FoundcodeListDblClick(Sender: TObject);
@@ -1508,6 +1623,24 @@ end;
 procedure TFoundCodeDialog.Copyselectiontoclipboard1Click(Sender: TObject);
 begin
   clipboard.AsText:=getSelection;
+end;
+
+procedure TFoundCodeDialog.timerAddressStringLookupTimer(Sender: TObject);
+var
+  i: integer;
+  starttime: qword;
+  c: FoundCodeUnit.TCodeRecord;
+begin
+  starttime:=GetTickCount64;
+  for i:=0 to foundcodelist.Items.Count-1 do
+  begin
+    c:=FoundCodeUnit.TCodeRecord(foundcodelist.items[i].data);
+    if c.addressString='' then
+      c.addressString:=symhandler.getNameFromAddress(c.address);
+
+
+    if gettickcount64-starttime>250 then break; //next time better
+  end;
 end;
 
 initialization

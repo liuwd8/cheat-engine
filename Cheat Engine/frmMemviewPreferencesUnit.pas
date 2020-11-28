@@ -7,7 +7,13 @@ interface
 uses
   Classes, SysUtils, FileUtil, LResources, Forms, Controls, Graphics, Dialogs,
   StdCtrls, Menus, ExtCtrls, disassemblerviewunit, disassemblerviewlinesunit,
-  windows;
+  LCLIntf, LCLType,
+  {$ifdef darwin}
+  macport, math
+  {$endif}
+  {$ifdef windows}
+  windows
+  {$endif};
 
 type
 
@@ -21,6 +27,7 @@ type
     Button3: TButton;
     cbColorGroup: TComboBox;
     cbShowStatusBar: TCheckBox;
+    cbOriginalRenderingSystem: TCheckBox;
     ColorDialog1: TColorDialog;
     cbFontQuality: TComboBox;
     edtSpaceAboveLines: TEdit;
@@ -194,13 +201,19 @@ begin
   cbColorGroup.Items.Add(rsDCUltimap2);
   cbColorGroup.Items.Add(rsDCHighlightedUltimap2);
   cbColorGroup.Items.Add(rsDCHighlightedUltimap2Secondary);
+
+  {$ifdef USELAZFREETYPE}
+  cbOriginalRenderingSystem.Visible:=true;
+  {$endif}
 end;
 
 procedure TfrmMemviewPreferences.FormShow(Sender: TObject);
 var
   i: integer;
   extrasize: integer;
+  {$ifdef windows}
   cbi: TComboboxInfo;
+  {$endif}
 begin
   applyfont;
 
@@ -208,10 +221,12 @@ begin
   cbColorGroupChange(cbColorGroup);
 
   //
+  {$ifdef windows}
   cbi.cbSize:=sizeof(cbi);
   if GetComboBoxInfo(cbColorGroup.handle, @cbi) then
     extrasize:=cbi.rcButton.Right-cbi.rcButton.Left+cbi.rcItem.Left
   else
+  {$endif}
     extrasize:=16;
 
   i:=Canvas.TextWidth(rsDCNormal)+extrasize;

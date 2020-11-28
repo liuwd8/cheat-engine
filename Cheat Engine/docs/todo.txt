@@ -1,4 +1,7 @@
-globaldisassembleoverride is fucked
+'sub rsp,20+(4*8)+(6*8)'
+set value to -888,12  (not -888.12) and see what happens
+
+
 
 
 structure dissect: 
@@ -15,18 +18,11 @@ graphical memory view:
   change format makes it black sometimes(loses position ?)
   sometimes the x position is not 0, but can't be changed back
 
-memview debugging: add a toolbar for single step/step over so you can debug by clicking icons
-
-dbvm_speedhack
-
-find higher resolution icons
-
 graphical tutorial: continue with it
 
 linux: make a 32-bit linux build with .so injection support
 memscan: Don't combine the scanresults into a single file. Leave them split up (skip: for 6.7 or 7.0)
 
-ceshare: continue with it
 pseudocode: continue with it
 mac version: work on it
 
@@ -38,9 +34,8 @@ pointerscan: when suspending a scan, CE closed itself(crash)
 
 test and fix the d3dhook stuff and trainer generator.  (perhaps dx12 support as well)
 
-add  access rights for the windows app user to pipes
 
-formdesigner: copy from outside a panel and paste into the panel will paste in the old location
 a timer causing a lua_error will eventually show c stack overflow
 
-dbvm: add maps and use them for cloaked regions
+
+mono plugin: When enumerating classes instead of getting a class get the typedefs only and get the info from the typedef info until an actual class is requested/expanded

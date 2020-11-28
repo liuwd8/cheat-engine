@@ -5,10 +5,16 @@ unit DissectCodeunit;
 interface
 
 uses
-  jwawindows, windows, LCLIntf, Messages, SysUtils, Variants, Classes, Graphics, Controls, Forms,
-  Dialogs, StdCtrls, ComCtrls, ExtCtrls,DissectCodeThread,CEFuncProc,
-  symbolhandler, LResources, frmReferencedStringsUnit, newkernelhandler, MemFuncs,
-  commonTypeDefs, ProcessHandlerUnit;
+  {$ifdef darwin}
+  macport,
+  {$endif}
+  {$ifdef windows}
+  jwawindows, windows,
+  {$endif}
+  LCLIntf, Messages, SysUtils, Variants, Classes, Graphics, Controls, Forms,
+  Dialogs, StdCtrls, ComCtrls, ExtCtrls, DissectCodeThread, CEFuncProc,
+  symbolhandler, LResources, Menus, frmReferencedStringsUnit, newkernelhandler,
+  MemFuncs, commonTypeDefs, ProcessHandlerUnit;
 
 
 
@@ -19,7 +25,13 @@ type
   { TfrmDissectCode }
 
   TfrmDissectCode = class(TForm)
+    MainMenu1: TMainMenu;
+    MenuItem1: TMenuItem;
+    MenuItem2: TMenuItem;
+    MenuItem3: TMenuItem;
+    OpenDialog1: TOpenDialog;
     ProgressBar1: TProgressBar;
+    SaveDialog1: TSaveDialog;
     Timer1: TTimer;
     Panel1: TPanel;
     lbModuleList: TListBox;
@@ -43,6 +55,8 @@ type
     lblMaxOffset: TLabel;
     procedure btnStartClick(Sender: TObject);
     procedure FormCreate(Sender: TObject);
+    procedure MenuItem2Click(Sender: TObject);
+    procedure MenuItem3Click(Sender: TObject);
     procedure Timer1Timer(Sender: TObject);
     procedure FormClose(Sender: TObject; var Action: TCloseAction);
     procedure FormShow(Sender: TObject);
@@ -70,6 +84,7 @@ resourcestring
   rsStart = 'Start';
   rsPleaseSelectSomethingToScan = 'Please select something to scan';
   rsDone = 'done';
+  rsDissectDataLoaded = 'Dissect data loaded';
 
 
 procedure TfrmDissectCode.btnStartClick(Sender: TObject);
@@ -152,6 +167,36 @@ end;
 procedure TfrmDissectCode.FormCreate(Sender: TObject);
 begin
   btnstart.caption:=rsStart;
+end;
+
+procedure TfrmDissectCode.MenuItem2Click(Sender: TObject);
+begin
+  if opendialog1.execute then
+  begin
+    if dissectcode=nil then
+      dissectcode:=TDissectCodeThread.create(false);
+
+    dissectcode.loadFromFile(opendialog1.filename);
+
+    lblStringRef.caption:=inttostr(dissectcode.nrofstring);
+    lblConditionalJumps.caption:=inttostr(dissectcode.nrofconditionaljumps);
+    lblUnConditionalJumps.caption:=inttostr(dissectcode.nrofunconditionaljumps);
+    lblCalls.caption:=inttostr(dissectcode.nrofcalls);
+    lblMaxOffset.caption:=inttostr(dissectcode.maxoffset);
+
+    showmessage(rsDissectDataLoaded);
+  end;
+end;
+
+procedure TfrmDissectCode.MenuItem3Click(Sender: TObject);
+begin
+  if savedialog1.execute then
+  begin
+    if dissectcode=nil then
+      dissectcode:=TDissectCodeThread.create(false);
+
+    dissectcode.saveTofile(savedialog1.filename);
+  end;
 end;
 
 procedure TfrmDissectCode.Timer1Timer(Sender: TObject);
